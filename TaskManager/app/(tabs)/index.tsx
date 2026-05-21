@@ -393,198 +393,208 @@ export default function App() {
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={Platform.OS === "ios" ? 90 : 80}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
     >
       <GestureHandlerRootView style={styles.container}>
         <View style={styles.header}>
-        <Text style={styles.title}>Task Manager</Text>
-        <Text style={styles.subtitle}>{activeBoard.title}</Text>
-        <View style={styles.headerActions}>
-          <TouchableOpacity style={styles.testButton} onPress={sendTestNotification}>
-            <Text style={styles.testButtonText}>Test Notification</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.heroRow}>
-          <View style={styles.heroCard}>
-            <Text style={styles.heroLabel}>Boards</Text>
-            <Text style={styles.heroValue}>{boards.length}</Text>
-          </View>
-          <View style={styles.heroCard}>
-            <Text style={styles.heroLabel}>Total Tasks</Text>
-            <Text style={styles.heroValue}>{totalTasks}</Text>
-          </View>
-          <View style={styles.heroCard}>
-            <Text style={styles.heroLabel}>Due Soon</Text>
-            <Text style={styles.heroValue}>{dueSoonCount}</Text>
-            <Text style={styles.heroSubtitle}>{overdueCount} overdue</Text>
-          </View>
-        </View>
-      </View>
-
-      <View style={styles.tabRow}>
-        {(["board", "add", "list"] as const).map((mode) => (
-          <TouchableOpacity
-            key={mode}
-            style={[
-              styles.tabButton,
-              screen === mode && styles.tabButtonActive,
-            ]}
-            onPress={() => setScreen(mode)}
-          >
-            <Text
-              style={
-                screen === mode ? styles.tabTextActive : styles.tabText
-              }
-            >
-              {mode === "board"
-                ? "Board"
-                : mode === "add"
-                ? "Add Task"
-                : "List View"}
-            </Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-
-      <View style={styles.selectorRow}>
-        <Text style={styles.selectorLabel}>Board:</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          {boards.map((board) => (
-            <TouchableOpacity
-              key={board.id}
-              style={[
-                styles.selectorButton,
-                board.id === activeBoard.id && styles.selectorButtonActive,
-              ]}
-              onPress={() => setActiveBoardId(board.id)}
-            >
-              <Text
-                style={
-                  board.id === activeBoard.id
-                    ? styles.selectorTextActive
-                    : styles.selectorText
-                }
-              >
-                {board.title}
-              </Text>
+          <View style={styles.headerTop}>
+            <View>
+              <Text style={styles.title}>Task Manager</Text>
+              <Text style={styles.subtitle}>{activeBoard.title}</Text>
+            </View>
+            <TouchableOpacity style={styles.testButton} onPress={sendTestNotification}>
+              <Text style={styles.testButtonText}>Ping</Text>
             </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
-
-      <View style={styles.addBoardRow}>
-        <TextInput
-          style={styles.input}
-          placeholder="New board name"
-          value={newBoardName}
-          onChangeText={setNewBoardName}
-        />
-        <Button title="Add Board" onPress={addBoard} />
-      </View>
-
-      {screen === "board" && (
-        <View style={styles.boardView}>
-          <View style={styles.addBoardRow}>
-            <TextInput
-              style={styles.input}
-              placeholder="New list name"
-              value={newListName}
-              onChangeText={setNewListName}
-            />
-            <Button title="Add List" onPress={addList} />
           </View>
 
-          <ScrollView
-            horizontal
-            style={styles.board}
-            contentContainerStyle={styles.boardContent}
-            showsHorizontalScrollIndicator={false}
-          >
-            {activeBoardLists.map((list) => (
-              <View
-                key={list.id}
-                ref={(ref) => {
-                  listRefs.current[list.id] = ref;
-                }}
-                onLayout={measureDropZones}
-                style={
-                  activeDropListId === list.id
-                    ? [styles.column, styles.dropHighlight]
-                    : styles.column
-                }
+          <View style={styles.heroRow}>
+            <View style={styles.heroCard}>
+              <Text style={styles.heroValue}>{boards.length}</Text>
+              <Text style={styles.heroLabel}>Boards</Text>
+            </View>
+            <View style={styles.heroCard}>
+              <Text style={styles.heroValue}>{totalTasks}</Text>
+              <Text style={styles.heroLabel}>Total Tasks</Text>
+            </View>
+            <View style={styles.heroCard}>
+              <Text style={styles.heroValue}>{dueSoonCount}</Text>
+              <Text style={styles.heroLabel}>Due Soon</Text>
+              {overdueCount > 0 && <Text style={styles.heroSubtitle}>{overdueCount} overdue</Text>}
+            </View>
+          </View>
+        </View>
+
+        <View style={styles.tabContainer}>
+          <View style={styles.tabRow}>
+            {(["board", "add", "list"] as const).map((mode) => (
+              <TouchableOpacity
+                key={mode}
+                style={[
+                  styles.tabButton,
+                  screen === mode && styles.tabButtonActive,
+                ]}
+                onPress={() => setScreen(mode)}
               >
-                <Text style={styles.columnTitle}>{list.title}</Text>
-                <Text style={styles.listCount}>{list.cards.length} cards</Text>
+                <Text
+                  style={
+                    screen === mode ? styles.tabTextActive : styles.tabText
+                  }
+                >
+                  {mode === "board" ? "Board" : mode === "add" ? "Add Task" : "List"}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
 
-                <View style={styles.columnBody}>
-                  {list.cards.map((card) => (
-                    <PanGestureHandler
-                      key={card.id}
-                      minDist={20}
-                      shouldCancelWhenOutside={false}
-                      onGestureEvent={({ nativeEvent }) => {
-                        if (draggingTask?.id === card.id) {
-                          handleDragMove(nativeEvent.absoluteX, nativeEvent.absoluteY);
-                        }
-                      }}
-                      onHandlerStateChange={({ nativeEvent }) => {
-                        if (nativeEvent.state === State.BEGAN) {
-                          startDrag(card, list.id, nativeEvent.absoluteX, nativeEvent.absoluteY);
-                        }
-
-                        if (
-                          nativeEvent.state === State.END ||
-                          nativeEvent.state === State.CANCELLED ||
-                          nativeEvent.state === State.FAILED
-                        ) {
-                          handleDragEnd();
-                        }
-                      }}
-                    >
-                      <View
-                        style={[
-                          styles.card,
-                          { opacity: draggingTask?.id === card.id ? 0.4 : 1 },
-                        ]}
-                      >
-                        <TaskCard
-                          task={card}
-                          moveToDone={moveToDone}
-                          addTaskLog={addTaskLog}
-                        />
-                      </View>
-                    </PanGestureHandler>
-                  ))}
-                </View>
-              </View>
+        <View style={styles.selectorRow}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.selectorScroll}>
+            {boards.map((board) => (
+              <TouchableOpacity
+                key={board.id}
+                style={[
+                  styles.selectorButton,
+                  board.id === activeBoard.id && styles.selectorButtonActive,
+                ]}
+                onPress={() => setActiveBoardId(board.id)}
+              >
+                <Text
+                  style={
+                    board.id === activeBoard.id
+                      ? styles.selectorTextActive
+                      : styles.selectorText
+                  }
+                >
+                  {board.title}
+                </Text>
+              </TouchableOpacity>
             ))}
           </ScrollView>
-
-          {draggingTask && (
-            <View
-              style={[
-                styles.dragPreview,
-                {
-                  left: dragPosition.x - 160,
-                  top: dragPosition.y - 48,
-                },
-              ]}
-            >
-              <Text style={styles.previewTitle}>{draggingTask.title}</Text>
-              <Text style={styles.previewSubtitle}>{draggingTask.assignedTo || "Unassigned"}</Text>
-            </View>
-          )}
         </View>
-      )}
 
-      {screen === "add" && <AddTaskScreen addTask={addTask} />}
+        {screen === "board" && (
+          <View style={styles.addInlineRow}>
+            <TextInput
+              style={styles.addInlineInput}
+              placeholder="New board name..."
+              placeholderTextColor="#94a3b8"
+              value={newBoardName}
+              onChangeText={setNewBoardName}
+            />
+            <TouchableOpacity style={styles.addInlineBtn} onPress={addBoard}>
+              <Text style={styles.addInlineBtnText}>+ Board</Text>
+            </TouchableOpacity>
+          </View>
+        )}
 
-      {screen === "list" && (
-        <ListViewScreen lists={activeBoardLists} moveToDone={moveToDone} addTaskLog={addTaskLog} />
-      )}
-    </GestureHandlerRootView>
+        {screen === "board" && (
+          <View style={styles.boardView}>
+            <View style={styles.addInlineRow}>
+              <TextInput
+                style={styles.addInlineInput}
+                placeholder="New list name..."
+                placeholderTextColor="#94a3b8"
+                value={newListName}
+                onChangeText={setNewListName}
+              />
+              <TouchableOpacity style={styles.addInlineBtn} onPress={addList}>
+                <Text style={styles.addInlineBtnText}>+ List</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              horizontal
+              style={styles.board}
+              contentContainerStyle={styles.boardContent}
+              showsHorizontalScrollIndicator={false}
+            >
+              {activeBoardLists.map((list) => (
+                <View
+                  key={list.id}
+                  ref={(ref) => {
+                    listRefs.current[list.id] = ref;
+                  }}
+                  onLayout={measureDropZones}
+                  style={
+                    activeDropListId === list.id
+                      ? [styles.column, styles.dropHighlight]
+                      : styles.column
+                  }
+                >
+                  <View style={styles.columnHeader}>
+                    <Text style={styles.columnTitle}>{list.title}</Text>
+                    <View style={styles.listCountBadge}>
+                      <Text style={styles.listCountText}>{list.cards.length}</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.columnBody}>
+                    {list.cards.map((card) => (
+                      <PanGestureHandler
+                        key={card.id}
+                        minDist={10}
+                        shouldCancelWhenOutside={false}
+                        onGestureEvent={({ nativeEvent }) => {
+                          if (draggingTask?.id === card.id) {
+                            handleDragMove(nativeEvent.absoluteX, nativeEvent.absoluteY);
+                          }
+                        }}
+                        onHandlerStateChange={({ nativeEvent }) => {
+                          if (nativeEvent.state === State.BEGAN) {
+                            startDrag(card, list.id, nativeEvent.absoluteX, nativeEvent.absoluteY);
+                          }
+
+                          if (
+                            nativeEvent.state === State.END ||
+                            nativeEvent.state === State.CANCELLED ||
+                            nativeEvent.state === State.FAILED
+                          ) {
+                            handleDragEnd();
+                          }
+                        }}
+                      >
+                        <View
+                          style={[
+                            styles.cardContainer,
+                            { opacity: draggingTask?.id === card.id ? 0.4 : 1 },
+                          ]}
+                        >
+                          <TaskCard
+                            task={card}
+                            moveToDone={moveToDone}
+                            addTaskLog={addTaskLog}
+                          />
+                        </View>
+                      </PanGestureHandler>
+                    ))}
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+
+            {draggingTask && (
+              <View
+                style={[
+                  styles.dragPreview,
+                  {
+                    left: dragPosition.x - 140,
+                    top: dragPosition.y - 40,
+                  },
+                ]}
+              >
+                <Text style={styles.previewTitle} numberOfLines={1}>{draggingTask.title}</Text>
+                <Text style={styles.previewSubtitle}>{draggingTask.assignedTo || "Unassigned"}</Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {screen === "add" && <AddTaskScreen addTask={addTask} />}
+
+        {screen === "list" && (
+          <ListViewScreen lists={activeBoardLists} moveToDone={moveToDone} addTaskLog={addTaskLog} />
+        )}
+      </GestureHandlerRootView>
     </KeyboardAvoidingView>
   );
 }
@@ -611,13 +621,13 @@ function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<v
   const submit = () => {
     const deadline = `${deadlineDate.trim()} ${deadlineTime.trim()}`;
     if (!title || !deadlineDate || !deadlineTime) {
-      Alert.alert("Error", "Task title and deadline are required.");
+      Alert.alert("Hold on", "Task title and deadline are required.");
       return;
     }
 
     const parsed = new Date(deadline);
     if (isNaN(parsed.getTime())) {
-      Alert.alert("Error", "Please enter a valid deadline in YYYY-MM-DD and HH:MM format.");
+      Alert.alert("Oops", "Please enter a valid deadline in YYYY-MM-DD and HH:MM format.");
       return;
     }
 
@@ -636,7 +646,7 @@ function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<v
     setDeadlineTime("18:00");
     setPriority("Medium");
 
-    Alert.alert("Success", "Task added.");
+    Alert.alert("Awesome", "Task added successfully!");
   };
 
   const tomorrow = new Date();
@@ -645,68 +655,110 @@ function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<v
   nextMonday.setDate(nextMonday.getDate() + ((8 - nextMonday.getDay()) % 7 || 7));
 
   return (
-    <ScrollView style={styles.form} contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled">
-      <TextInput
-        style={styles.input}
-        placeholder="Task title"
-        value={title}
-        onChangeText={setTitle}
-      />
+    <ScrollView style={styles.formContainer} contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled">
+      <Text style={styles.formSectionTitle}>Create New Task</Text>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Assign user"
-        value={assignedTo}
-        onChangeText={setAssignedTo}
-      />
-
-      <TextInput
-        style={styles.input}
-        placeholder="Required time, e.g. 3 hours"
-        value={requiredTime}
-        onChangeText={setRequiredTime}
-      />
-
-      <View style={styles.deadlineRow}>
+      <View style={styles.inputGroup}>
+        <Text style={styles.inputLabel}>Task Title</Text>
         <TextInput
-          style={[styles.input, styles.deadlineInput]}
-          placeholder="YYYY-MM-DD"
-          value={deadlineDate}
-          onChangeText={setDeadlineDate}
-        />
-        <TextInput
-          style={[styles.input, styles.deadlineInput]}
-          placeholder="HH:MM"
-          value={deadlineTime}
-          onChangeText={setDeadlineTime}
+          style={styles.input}
+          placeholder="e.g. Design homepage..."
+          placeholderTextColor="#9ca3af"
+          value={title}
+          onChangeText={setTitle}
         />
       </View>
 
-      <View style={styles.presetRow}>
-        <TouchableOpacity style={styles.presetButton} onPress={() => applyPreset(new Date(), "18:00")}> 
-          <Text style={styles.presetText}>Today 18:00</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.presetButton} onPress={() => applyPreset(tomorrow, "18:00")}> 
-          <Text style={styles.presetText}>Tomorrow 18:00</Text>
-        </TouchableOpacity>
-      </View>
-      <View style={styles.presetRow}>
-        <TouchableOpacity style={styles.presetButton} onPress={() => applyPreset(tomorrow, "10:00")}> 
-          <Text style={styles.presetText}>Tomorrow 10:00</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.presetButton} onPress={() => applyPreset(nextMonday, "09:00")}> 
-          <Text style={styles.presetText}>Mon 09:00</Text>
-        </TouchableOpacity>
+      <View style={styles.inputGroup}>
+        <Text style={styles.inputLabel}>Assign User</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="e.g. Alex"
+          placeholderTextColor="#9ca3af"
+          value={assignedTo}
+          onChangeText={setAssignedTo}
+        />
       </View>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Priority: Low / Medium / High"
-        value={priority}
-        onChangeText={setPriority}
-      />
+      <View style={styles.inputGroup}>
+        <Text style={styles.inputLabel}>Estimated Time</Text>
+        <TextInput
+          style={styles.input}
+          placeholder="e.g. 3 hours"
+          placeholderTextColor="#9ca3af"
+          value={requiredTime}
+          onChangeText={setRequiredTime}
+        />
+      </View>
 
-      <Button title="Add Task" onPress={submit} />
+      <View style={styles.inputGroup}>
+        <Text style={styles.inputLabel}>Deadline</Text>
+        <View style={styles.deadlineRow}>
+          <TextInput
+            style={[styles.input, styles.deadlineInput]}
+            placeholder="YYYY-MM-DD"
+            placeholderTextColor="#9ca3af"
+            value={deadlineDate}
+            onChangeText={setDeadlineDate}
+          />
+          <TextInput
+            style={[styles.input, styles.deadlineInput]}
+            placeholder="HH:MM"
+            placeholderTextColor="#9ca3af"
+            value={deadlineTime}
+            onChangeText={setDeadlineTime}
+          />
+        </View>
+        <View style={styles.presetRow}>
+          <TouchableOpacity style={styles.presetBtn} onPress={() => applyPreset(new Date(), "18:00")}> 
+            <Text style={styles.presetBtnText}>Today 6 PM</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.presetBtn} onPress={() => applyPreset(tomorrow, "18:00")}> 
+            <Text style={styles.presetBtnText}>Tmrw 6 PM</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.presetBtn} onPress={() => applyPreset(nextMonday, "09:00")}> 
+            <Text style={styles.presetBtnText}>Mon 9 AM</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <View style={styles.inputGroup}>
+        <Text style={styles.inputLabel}>Priority</Text>
+        <View style={styles.prioritySelector}>
+          {["Low", "Medium", "High"].map((p) => {
+            const isActive = priority.toLowerCase() === p.toLowerCase();
+            return (
+              <TouchableOpacity
+                key={p}
+                style={[
+                  styles.priorityBtn,
+                  isActive && styles.priorityBtnActive,
+                  isActive && p === "High" && { backgroundColor: "#ffebee", borderColor: "#ef5350" },
+                  isActive && p === "Medium" && { backgroundColor: "#fff3e0", borderColor: "#ffa726" },
+                  isActive && p === "Low" && { backgroundColor: "#e8f5e9", borderColor: "#66bb6a" },
+                ]}
+                onPress={() => setPriority(p)}
+              >
+                <Text
+                  style={[
+                    styles.priorityBtnText,
+                    isActive && styles.priorityBtnTextActive,
+                    isActive && p === "High" && { color: "#d32f2f" },
+                    isActive && p === "Medium" && { color: "#f57c00" },
+                    isActive && p === "Low" && { color: "#388e3c" },
+                  ]}
+                >
+                  {p}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </View>
+
+      <TouchableOpacity style={styles.submitBtn} onPress={submit}>
+        <Text style={styles.submitBtnText}>Save Task</Text>
+      </TouchableOpacity>
     </ScrollView>
   );
 }
@@ -719,7 +771,9 @@ function ListViewScreen({ lists, moveToDone, addTaskLog }: { lists: TaskList[]; 
   return (
     <ScrollView style={styles.listView} contentContainerStyle={styles.listContent} keyboardShouldPersistTaps="handled">
       {allTasks.map((task) => (
-        <TaskCard key={task.id} task={task} moveToDone={moveToDone} addTaskLog={addTaskLog} />
+        <View key={task.id} style={styles.listCardWrapper}>
+          <TaskCard task={task} moveToDone={moveToDone} addTaskLog={addTaskLog} />
+        </View>
       ))}
     </ScrollView>
   );
@@ -734,41 +788,60 @@ function TaskCard({
   moveToDone?: (cardId: string) => void;
   addTaskLog?: (cardId: string) => void;
 }) {
-  const borderColor = getCardColor(task);
-  const getPriorityColor = (p: string) => {
-    if (!p) return "#999";
-    const up = p.toLowerCase();
-    if (up.includes("high")) return "#c62828";
-    if (up.includes("medium")) return "#ef6c00";
-    if (up.includes("low")) return "#2e7d32";
-    return "#607d8b";
-  };
+  const colors = getCardTheme(task);
 
-  const textColor = getCardTextColor(task);
+  const getPriorityColor = (p: string) => {
+    if (!p) return { bg: "#f5f5f5", text: "#666666" };
+    const up = p.toLowerCase();
+    if (up.includes("high")) return { bg: "#ffebee", text: "#d32f2f" };
+    if (up.includes("medium")) return { bg: "#fff3e0", text: "#e65100" };
+    if (up.includes("low")) return { bg: "#e8f5e9", text: "#2e7d32" };
+    return { bg: "#f5f5f5", text: "#666666" };
+  };
+  
+  const priorityTheme = getPriorityColor(task.priority);
 
   return (
-    <View style={[styles.card, { backgroundColor: getCardColor(task), borderLeftColor: borderColor }]}> 
-      <View style={[styles.priorityBadge, { backgroundColor: getPriorityColor(task.priority) }]}> 
-        <Text style={styles.priorityBadgeText}>{task.priority}</Text>
+    <View style={[styles.card, { backgroundColor: colors.bg, borderColor: colors.border }]}> 
+      <View style={styles.cardHeader}>
+        <View style={[styles.priorityBadge, { backgroundColor: priorityTheme.bg }]}> 
+          <Text style={[styles.priorityBadgeText, { color: priorityTheme.text }]}>{task.priority || "None"}</Text>
+        </View>
+        {task.completed && (
+          <View style={styles.completedBadge}>
+            <Text style={styles.completedBadgeText}>DONE</Text>
+          </View>
+        )}
       </View>
 
-      <Text style={[styles.cardTitle, { color: textColor }]}>{task.title}</Text>
-      <Text style={[styles.cardText, { color: textColor }]}>Assigned to: {task.assignedTo || "Unassigned"}</Text>
-      <Text style={[styles.cardText, { color: textColor }]}>Required time: {task.requiredTime}</Text>
-      <Text style={[styles.cardText, { color: textColor }]}>Deadline: {task.deadline}</Text>
+      <Text style={[styles.cardTitle, { color: colors.title }]}>{task.title}</Text>
+      
+      <View style={styles.cardDetails}>
+        <Text style={[styles.cardText, { color: colors.text }]} numberOfLines={1}>Assignee: {task.assignedTo || "Unassigned"}</Text>
+        <Text style={[styles.cardText, { color: colors.text }]}>Time: {task.requiredTime || "N/A"}</Text>
+        <Text style={[styles.cardText, { color: colors.text }]}>Due: {task.deadline}</Text>
+      </View>
 
-      <Text style={[styles.logsTitle, { color: textColor }]}>Activity Logs</Text>
-      {task.logs.map((log, index) => (
-        <Text key={index} style={[styles.log, { color: textColor }]}>• {log}</Text>
-      ))}
+      {task.logs && task.logs.length > 0 && (
+        <View style={styles.logsContainer}>
+          <Text style={[styles.logsTitle, { color: colors.text }]}>Activity</Text>
+          {task.logs.slice(-2).map((log, index) => (
+            <Text key={index} style={[styles.log, { color: colors.text }]} numberOfLines={1}>• {log}</Text>
+          ))}
+        </View>
+      )}
 
       {(moveToDone || addTaskLog) && (
         <View style={styles.cardActions}>
           {moveToDone && !task.completed && (
-            <Button title="Mark as Complete" onPress={() => moveToDone(task.id)} />
+            <TouchableOpacity style={[styles.actionBtn, styles.completeBtn]} onPress={() => moveToDone(task.id)}>
+              <Text style={styles.completeBtnText}>Complete</Text>
+            </TouchableOpacity>
           )}
           {addTaskLog && (
-            <Button title="Add Note" onPress={() => addTaskLog(task.id)} />
+            <TouchableOpacity style={[styles.actionBtn, styles.noteBtn]} onPress={() => addTaskLog(task.id)}>
+              <Text style={styles.noteBtnText}>Add Note</Text>
+            </TouchableOpacity>
           )}
         </View>
       )}
@@ -776,165 +849,185 @@ function TaskCard({
   );
 }
 
-function getCardColor(task: Task) {
-  if (task.completed) return "#8BC34A";
+function getCardTheme(task: Task) {
+  if (task.completed) {
+    return { bg: "#ffffff", border: "#4caf50", title: "#000000", text: "#666666" };
+  }
 
   const now = new Date();
   const deadline = new Date(task.deadline);
   const diffHours = (deadline.getTime() - now.getTime()) / (1000 * 60 * 60);
 
-  if (diffHours <= 0) return "#E57373";
-  if (diffHours <= 24) return "#FFB74D";
-  if (diffHours <= 72) return "#FFF176";
-
-  return "#FFFFFF";
-}
-
-function getCardTextColor(task: Task) {
-  const bg = getCardColor(task);
-  if (bg === "#E57373" || bg === "#8BC34A") return "#fff";
-  return "#111";
+  if (diffHours <= 0) {
+    return { bg: "#ffffff", border: "#f44336", title: "#000000", text: "#666666" };
+  }
+  if (diffHours <= 24) {
+    return { bg: "#ffffff", border: "#ff9800", title: "#000000", text: "#666666" };
+  }
+  
+  return { bg: "#ffffff", border: "#eaeaea", title: "#000000", text: "#666666" };
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f2f2f2",
-    paddingTop: 36,
+    backgroundColor: "#ffffff",
+    paddingTop: Platform.OS === 'android' ? 40 : 48,
   },
   header: {
-    paddingHorizontal: 16,
-    marginBottom: 12,
-    backgroundColor: "#1f8ef1",
-    paddingTop: 18,
-    paddingBottom: 18,
-    borderBottomLeftRadius: 18,
-    borderBottomRightRadius: 18,
+    paddingHorizontal: 20,
+    paddingBottom: 24,
+    backgroundColor: "#ffffff",
+    borderBottomWidth: 1,
+    borderBottomColor: "#eaeaea",
+  },
+  headerTop: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
   },
   title: {
-    fontSize: 28,
-    fontWeight: "bold",
-    color: "#fff",
+    fontSize: 24,
+    fontWeight: "700",
+    color: "#000000",
+    letterSpacing: -0.5,
   },
   subtitle: {
-    marginTop: 4,
-    color: "rgba(255,255,255,0.9)",
-  },
-  headerActions: {
-    marginTop: 8,
-    flexDirection: "row",
-    justifyContent: "flex-end",
+    marginTop: 2,
+    color: "#666666",
+    fontSize: 14,
+    fontWeight: "400",
   },
   testButton: {
-    backgroundColor: "rgba(255,255,255,0.16)",
-    paddingHorizontal: 10,
+    paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 12,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: "#eaeaea",
   },
   testButtonText: {
-    color: "#fff",
-    fontWeight: "600",
+    color: "#000000",
+    fontWeight: "500",
+    fontSize: 12,
   },
   heroRow: {
     flexDirection: "row",
     justifyContent: "space-between",
-    marginTop: 18,
+    marginTop: 24,
   },
   heroCard: {
     flex: 1,
-    backgroundColor: "#fff",
-    borderRadius: 16,
-    padding: 14,
-    marginRight: 10,
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 5 },
-  },
-  heroCardLast: {
-    marginRight: 0,
+    padding: 12,
+    marginHorizontal: 4,
+    borderWidth: 1,
+    borderColor: "#eaeaea",
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   heroLabel: {
-    fontSize: 12,
-    color: "#5c6b86",
+    fontSize: 11,
+    color: "#666666",
+    fontWeight: "500",
+    marginTop: 4,
   },
   heroValue: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: "700",
-    marginTop: 8,
-    color: "#111",
+    color: "#000000",
   },
   heroSubtitle: {
-    marginTop: 6,
-    color: "#5c6b86",
-    fontSize: 12,
+    marginTop: 4,
+    color: "#d32f2f",
+    fontSize: 10,
+    fontWeight: "600",
+  },
+  tabContainer: {
+    paddingHorizontal: 20,
+    marginTop: 16,
   },
   tabRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginHorizontal: 16,
-    marginBottom: 12,
-    backgroundColor: "#ffffff",
-    borderRadius: 18,
-    padding: 8,
-    shadowColor: "#2a4a7a",
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
+    borderBottomWidth: 1,
+    borderBottomColor: "#eaeaea",
   },
   tabButton: {
     flex: 1,
-    marginHorizontal: 4,
-    paddingVertical: 10,
-    borderRadius: 14,
-    backgroundColor: "transparent",
+    paddingVertical: 12,
     alignItems: "center",
+    borderBottomWidth: 2,
+    borderBottomColor: "transparent",
   },
   tabButtonActive: {
-    backgroundColor: "#2f95dc",
+    borderBottomColor: "#000000",
   },
   tabText: {
-    color: "#555",
-    fontWeight: "600",
+    color: "#888888",
+    fontWeight: "500",
+    fontSize: 14,
   },
   tabTextActive: {
-    color: "#fff",
-    fontWeight: "700",
+    color: "#000000",
+    fontWeight: "600",
+    fontSize: 14,
   },
   selectorRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: 16,
-    marginBottom: 12,
+    marginTop: 16,
+    paddingBottom: 16,
   },
-  selectorLabel: {
-    marginRight: 10,
-    fontWeight: "600",
-    color: "#333",
+  selectorScroll: {
+    paddingHorizontal: 20,
   },
   selectorButton: {
-    paddingHorizontal: 12,
+    paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 20,
     backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#eaeaea",
     marginRight: 10,
   },
   selectorButtonActive: {
-    backgroundColor: "#2f95dc",
+    backgroundColor: "#000000",
+    borderColor: "#000000",
   },
   selectorText: {
-    color: "#333",
+    color: "#666666",
+    fontWeight: "400",
+    fontSize: 13,
   },
   selectorTextActive: {
-    color: "#fff",
+    color: "#ffffff",
+    fontWeight: "500",
+    fontSize: 13,
   },
-  addBoardRow: {
+  addInlineRow: {
     flexDirection: "row",
-    alignItems: "center",
+    paddingHorizontal: 20,
+    marginBottom: 16,
+  },
+  addInlineInput: {
+    flex: 1,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#eaeaea",
+    borderRadius: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginRight: 10,
+    color: "#000000",
+    fontSize: 14,
+  },
+  addInlineBtn: {
+    backgroundColor: "#000000",
+    justifyContent: "center",
     paddingHorizontal: 16,
-    marginBottom: 12,
-    justifyContent: "space-between",
+    borderRadius: 8,
+  },
+  addInlineBtnText: {
+    color: "#ffffff",
+    fontWeight: "500",
+    fontSize: 13,
   },
   boardView: {
     flex: 1,
@@ -945,155 +1038,281 @@ const styles = StyleSheet.create({
   },
   boardContent: {
     paddingVertical: 12,
+    paddingRight: 32,
   },
   column: {
-    width: 260,
-    minHeight: 240,
-    backgroundColor: "#f7f7f7",
+    width: 280,
+    backgroundColor: "#fafafa",
     marginRight: 16,
-    padding: 16,
-    borderRadius: 18,
+    padding: 12,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: "#ececec",
-    shadowColor: "#000",
-    shadowOpacity: 0.05,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 2 },
+    borderColor: "#eaeaea",
   },
   dropHighlight: {
-    borderColor: "#34c759",
-    backgroundColor: "#edf9f0",
+    borderColor: "#000000",
+    backgroundColor: "#f5f5f5",
   },
-  columnBody: {
-    marginTop: 12,
+  columnHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 12,
   },
   columnTitle: {
-    fontSize: 20,
-    fontWeight: "bold",
-    marginBottom: 10,
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#000000",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   },
-  listCount: {
-    marginBottom: 8,
-    color: "#444",
+  listCountBadge: {
+    backgroundColor: "#eaeaea",
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+  },
+  listCountText: {
+    fontSize: 11,
+    fontWeight: "500",
+    color: "#333333",
+  },
+  columnBody: {
+    minHeight: 200,
+  },
+  cardContainer: {
+    marginBottom: 12,
   },
   card: {
     padding: 16,
-    borderRadius: 16,
-    marginBottom: 12,
-    backgroundColor: "#fff",
-    shadowColor: "#000",
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 6 },
-    borderLeftWidth: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    backgroundColor: '#ffffff',
   },
-  priorityBadge: {
-    alignSelf: "flex-start",
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
-    marginBottom: 8,
-  },
-  priorityBadgeText: {
-    color: "#fff",
-    fontWeight: "700",
-    fontSize: 12,
-  },
-  cardTitle: {
-    fontSize: 17,
-    fontWeight: "bold",
-    marginBottom: 6,
-  },
-  cardActions: {
-    marginTop: 10,
+  cardHeader: {
     flexDirection: "row",
     justifyContent: "space-between",
+    alignItems: "flex-start",
+    marginBottom: 12,
+  },
+  priorityBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  priorityBadgeText: {
+    fontWeight: "600",
+    fontSize: 10,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
+  completedBadge: {
+    backgroundColor: "#e8f5e9",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  completedBadgeText: {
+    color: "#2e7d32",
+    fontWeight: "600",
+    fontSize: 10,
+  },
+  cardTitle: {
+    fontSize: 15,
+    fontWeight: "600",
+    marginBottom: 12,
+    lineHeight: 20,
+    color: "#000000",
+  },
+  cardDetails: {
+    gap: 4,
+  },
+  cardText: {
+    fontSize: 12,
+    fontWeight: "400",
+    color: "#666666",
+  },
+  logsContainer: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#eaeaea",
+  },
+  logsTitle: {
+    fontSize: 11,
+    fontWeight: "600",
+    marginBottom: 4,
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    color: "#333333",
+  },
+  log: {
+    fontSize: 11,
+    marginTop: 2,
+    color: "#666666",
+  },
+  cardActions: {
+    marginTop: 16,
+    flexDirection: "row",
+    gap: 8,
+  },
+  actionBtn: {
+    flex: 1,
+    paddingVertical: 8,
+    borderRadius: 6,
+    alignItems: "center",
+    borderWidth: 1,
+  },
+  completeBtn: {
+    backgroundColor: "#000000",
+    borderColor: "#000000",
+  },
+  completeBtnText: {
+    color: "#ffffff",
+    fontWeight: "500",
+    fontSize: 12,
+  },
+  noteBtn: {
+    backgroundColor: "transparent",
+    borderColor: "#eaeaea",
+  },
+  noteBtnText: {
+    color: "#000000",
+    fontWeight: "500",
+    fontSize: 12,
   },
   dragPreview: {
     position: "absolute",
-    width: 320,
-    padding: 14,
-    backgroundColor: "rgba(255,255,255,0.96)",
-    borderRadius: 18,
+    width: 280,
+    padding: 16,
+    backgroundColor: "#ffffff",
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: "rgba(0,0,0,0.08)",
-    shadowColor: "#000",
-    shadowOpacity: 0.12,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 10 },
+    borderColor: "#000000",
+    shadowColor: "#000000",
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
     zIndex: 100,
+    transform: [{ scale: 1.02 }],
   },
   previewTitle: {
-    fontSize: 16,
-    fontWeight: "700",
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#000000",
     marginBottom: 4,
   },
   previewSubtitle: {
-    color: "#666",
-    fontSize: 13,
+    color: "#666666",
+    fontSize: 12,
   },
-  form: {
-    padding: 16,
-    backgroundColor: "#f6f9ff",
-    borderRadius: 24,
-    marginHorizontal: 16,
-    marginBottom: 16,
+  formContainer: {
+    flex: 1,
+    padding: 20,
   },
   formContent: {
-    paddingBottom: 120,
+    paddingBottom: 100,
+  },
+  formSectionTitle: {
+    fontSize: 18,
+    fontWeight: "600",
+    color: "#000000",
+    marginBottom: 20,
+  },
+  inputGroup: {
+    marginBottom: 20,
+  },
+  inputLabel: {
+    fontSize: 12,
+    fontWeight: "500",
+    color: "#666666",
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  input: {
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#eaeaea",
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 8,
+    color: "#000000",
+    fontSize: 14,
   },
   deadlineRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 12,
   },
   deadlineInput: {
     flex: 1,
-    marginRight: 8,
   },
   presetRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    marginBottom: 10,
+    gap: 8,
   },
-  presetButton: {
+  presetBtn: {
     flex: 1,
-    backgroundColor: "#2f95dc",
-    paddingVertical: 10,
-    borderRadius: 10,
+    backgroundColor: "#fafafa",
+    borderWidth: 1,
+    borderColor: "#eaeaea",
+    paddingVertical: 8,
+    borderRadius: 6,
     alignItems: "center",
-    marginRight: 8,
   },
-  presetButtonLast: {
-    marginRight: 0,
+  presetBtnText: {
+    color: "#333333",
+    fontSize: 11,
+    fontWeight: "500",
   },
-  presetText: {
-    color: "#fff",
+  prioritySelector: {
+    flexDirection: "row",
+    gap: 12,
+  },
+  priorityBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#eaeaea",
+    backgroundColor: "#ffffff",
+    alignItems: "center",
+  },
+  priorityBtnActive: {
+    backgroundColor: "#fafafa",
+    borderColor: "#000000",
+  },
+  priorityBtnText: {
+    color: "#666666",
+    fontWeight: "500",
+    fontSize: 13,
+  },
+  priorityBtnTextActive: {
+    color: "#000000",
     fontWeight: "600",
   },
-  input: {
-    borderWidth: 1,
-    borderColor: "#aaa",
-    padding: 12,
+  submitBtn: {
+    backgroundColor: "#000000",
+    paddingVertical: 14,
     borderRadius: 8,
-    backgroundColor: "#fff",
-    marginBottom: 10,
+    alignItems: "center",
+    marginTop: 10,
+  },
+  submitBtnText: {
+    color: "#ffffff",
+    fontWeight: "600",
+    fontSize: 14,
   },
   listView: {
     flex: 1,
-    padding: 15,
+    paddingHorizontal: 20,
+    paddingTop: 16,
   },
   listContent: {
-    paddingBottom: 120,
+    paddingBottom: 100,
   },
-  cardText: {
-    fontSize: 14,
-    marginBottom: 2,
-  },
-  logsTitle: {
-    marginTop: 8,
-    fontWeight: "bold",
-  },
-  log: {
-    fontSize: 12,
-  },
+  listCardWrapper: {
+    marginBottom: 16,
+  }
 });
