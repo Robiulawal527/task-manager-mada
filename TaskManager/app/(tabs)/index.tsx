@@ -10,8 +10,12 @@ import {
   ScrollView,
   Alert,
 } from "react-native";
-import { GestureHandlerRootView } from "react-native-gesture-handler";
-import DraggableFlatList from "react-native-draggable-flatlist";
+import {
+  GestureHandlerRootView,
+  PanGestureHandler,
+  PanGestureHandlerGestureEvent,
+  State,
+} from "react-native-gesture-handler";
 
 type Task = {
   id: string;
@@ -99,6 +103,100 @@ export default function App() {
         board.id === activeBoard.id ? { ...board, lists } : board
       )
     );
+  };
+
+  const dropZones = useRef<Record<string, { x: number; y: number; width: number; height: number }>>({});
+  const [draggingTask, setDraggingTask] = useState<Task | null>(null);
+  const [dragOriginListId, setDragOriginListId] = useState<string | null>(null);
+  const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
+  const [activeDropListId, setActiveDropListId] = useState<string | null>(null);
+  const listRefs = useRef<Record<string, any | null>>({});
+
+  const measureDropZones = () => {
+    Object.entries(listRefs.current).forEach(([listId, ref]) => {
+      if (!ref || typeof ref.measureInWindow !== "function") return;
+      ref.measureInWindow((x: number, y: number, width: number, height: number) => {
+        dropZones.current[listId] = { x, y, width, height };
+      });
+    });
+  };
+
+  const findDropListForPosition = (x: number, y: number) => {
+    const zoneEntry = Object.entries(dropZones.current).find(([, zone]) => {
+      return x >= zone.x && x <= zone.x + zone.width && y >= zone.y && y <= zone.y + zone.height;
+    });
+    return zoneEntry ? zoneEntry[0] : null;
+  };
+
+  const moveTaskBetweenLists = (taskId: string, fromListId: string, toListId: string) => {
+    let movedTask: Task | null = null;
+
+    const nextLists = activeBoard.lists.map((list) => {
+      if (list.id !== fromListId) return list;
+
+      const remainingCards = list.cards.filter((card) => {
+        if (card.id === taskId) {
+          movedTask = card;
+          return false;
+        }
+        return true;
+      });
+
+      return { ...list, cards: remainingCards };
+    });
+
+    if (!movedTask) {
+      return;
+    }
+
+    if (fromListId === toListId) {
+      updateBoardLists(nextLists);
+      return;
+    }
+
+    const completedTask =
+      toListId === "done" && !movedTask.completed
+        ? {
+            ...movedTask,
+            completed: true,
+            logs: [
+              ...movedTask.logs,
+              `Moved to Done at ${new Date().toLocaleString()}`,
+            ],
+          }
+        : movedTask;
+
+    updateBoardLists(
+      nextLists.map((list) =>
+        list.id === toListId
+          ? { ...list, cards: [...list.cards, completedTask] }
+          : list
+      )
+    );
+  };
+
+  const handleDragMove = (x: number, y: number) => {
+    setDragPosition({ x, y });
+    const target = findDropListForPosition(x, y);
+    setActiveDropListId(target);
+  };
+
+  const handleDragEnd = () => {
+    if (draggingTask && dragOriginListId && activeDropListId) {
+      moveTaskBetweenLists(draggingTask.id, dragOriginListId, activeDropListId);
+    }
+    setDraggingTask(null);
+    setDragOriginListId(null);
+    setActiveDropListId(null);
+    setDragPosition({ x: 0, y: 0 });
+  };
+
+  const startDrag = (task: Task, listId: string, x: number, y: number) => {
+    setDraggingTask(task);
+    setDragOriginListId(listId);
+    setDragPosition({ x, y });
+    setActiveDropListId(listId);
+    measureDropZones();
   };
 
   const addTask = async (task: NewTaskInput) => {
@@ -296,54 +394,101 @@ export default function App() {
             <Button title="Add List" onPress={addList} />
           </View>
 
-          <ScrollView horizontal style={styles.board}>
+          <ScrollView
+            horizontal
+            style={styles.board}
+            contentContainerStyle={styles.boardContent}
+            showsHorizontalScrollIndicator={false}
+          >
             {activeBoardLists.map((list) => (
-              <View key={list.id} style={styles.column}>
+              <View
+                key={list.id}
+                ref={(ref) => {
+                  listRefs.current[list.id] = ref;
+                }}
+                onLayout={measureDropZones}
+                style={
+                  activeDropListId === list.id
+                    ? [styles.column, styles.dropHighlight]
+                    : styles.column
+                }
+              >
                 <Text style={styles.columnTitle}>{list.title}</Text>
                 <Text style={styles.listCount}>{list.cards.length} cards</Text>
 
-                <DraggableFlatList
-                  data={list.cards}
-                  keyExtractor={(item) => item.id}
-                  onDragEnd={({ data }) =>
-                    updateBoardLists(
-                      activeBoardLists.map((current) =>
-                        current.id === list.id
-                          ? { ...current, cards: data }
-                          : current
-                      )
-                    )
-                  }
-                  renderItem={({ item, drag }) => (
-                    <TouchableOpacity onLongPress={drag}>
-                      <TaskCard
-                        task={item}
-                        moveToDone={moveToDone}
-                        addTaskLog={(taskId) => {
-                          updateBoardLists(
-                            activeBoardLists.map((current) => ({
-                              ...current,
-                              cards: current.cards.map((card) =>
-                                card.id === taskId
-                                  ? {
-                                      ...card,
-                                      logs: [
-                                        ...card.logs,
-                                        `Note added at ${new Date().toLocaleString()}`,
-                                      ],
-                                    }
-                                  : card
-                              ),
-                            }))
-                          );
-                        }}
-                      />
-                    </TouchableOpacity>
-                  )}
-                />
+                <View style={styles.columnBody}>
+                  {list.cards.map((card) => (
+                    <PanGestureHandler
+                      key={card.id}
+                      onGestureEvent={({ nativeEvent }) => {
+                        if (draggingTask?.id === card.id) {
+                          handleDragMove(nativeEvent.absoluteX, nativeEvent.absoluteY);
+                        }
+                      }}
+                      onHandlerStateChange={({ nativeEvent }) => {
+                        if (nativeEvent.state === State.BEGAN) {
+                          startDrag(card, list.id, nativeEvent.absoluteX, nativeEvent.absoluteY);
+                        }
+
+                        if (
+                          nativeEvent.state === State.END ||
+                          nativeEvent.state === State.CANCELLED ||
+                          nativeEvent.state === State.FAILED
+                        ) {
+                          handleDragEnd();
+                        }
+                      }}
+                    >
+                      <View
+                        style={[
+                          styles.card,
+                          { opacity: draggingTask?.id === card.id ? 0.4 : 1 },
+                        ]}
+                      >
+                        <TaskCard
+                          task={card}
+                          moveToDone={moveToDone}
+                          addTaskLog={(taskId) => {
+                            updateBoardLists(
+                              activeBoardLists.map((current) => ({
+                                ...current,
+                                cards: current.cards.map((item) =>
+                                  item.id === taskId
+                                    ? {
+                                        ...item,
+                                        logs: [
+                                          ...item.logs,
+                                          `Note added at ${new Date().toLocaleString()}`,
+                                        ],
+                                      }
+                                    : item
+                                ),
+                              }))
+                            );
+                          }}
+                        />
+                      </View>
+                    </PanGestureHandler>
+                  ))}
+                </View>
               </View>
             ))}
           </ScrollView>
+
+          {draggingTask && (
+            <View
+              style={[
+                styles.dragPreview,
+                {
+                  left: dragPosition.x - 160,
+                  top: dragPosition.y - 48,
+                },
+              ]}
+            >
+              <Text style={styles.previewTitle}>{draggingTask.title}</Text>
+              <Text style={styles.previewSubtitle}>{draggingTask.assignedTo || "Unassigned"}</Text>
+            </View>
+          )}
         </View>
       )}
 
@@ -448,7 +593,7 @@ function TaskCard({
   addTaskLog,
 }: {
   task: Task;
-  moveToDone: (cardId: string) => void;
+  moveToDone?: (cardId: string) => void;
   addTaskLog?: (cardId: string) => void;
 }) {
   return (
@@ -466,14 +611,16 @@ function TaskCard({
         </Text>
       ))}
 
-      <View style={styles.cardActions}>
-        {!task.completed && (
-          <Button title="Mark as Complete" onPress={() => moveToDone(task.id)} />
-        )}
-        {addTaskLog && (
-          <Button title="Add Note" onPress={() => addTaskLog(task.id)} />
-        )}
-      </View>
+      {(moveToDone || addTaskLog) && (
+        <View style={styles.cardActions}>
+          {moveToDone && !task.completed && (
+            <Button title="Mark as Complete" onPress={() => moveToDone(task.id)} />
+          )}
+          {addTaskLog && (
+            <Button title="Add Note" onPress={() => addTaskLog(task.id)} />
+          )}
+        </View>
+      )}
     </View>
   );
 }
@@ -572,12 +719,28 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 16,
   },
+  boardContent: {
+    paddingVertical: 12,
+  },
   column: {
-    width: 280,
-    backgroundColor: "#e0e0e0",
-    marginRight: 12,
-    padding: 10,
-    borderRadius: 10,
+    width: 300,
+    backgroundColor: "#f7f7f7",
+    marginRight: 16,
+    padding: 16,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "#ececec",
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  dropHighlight: {
+    borderColor: "#34c759",
+    backgroundColor: "#edf9f0",
+  },
+  columnBody: {
+    marginTop: 12,
   },
   columnTitle: {
     fontSize: 20,
@@ -603,6 +766,29 @@ const styles = StyleSheet.create({
     marginTop: 10,
     flexDirection: "row",
     justifyContent: "space-between",
+  },
+  dragPreview: {
+    position: "absolute",
+    width: 320,
+    padding: 14,
+    backgroundColor: "rgba(255,255,255,0.96)",
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: "rgba(0,0,0,0.08)",
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 10 },
+    zIndex: 100,
+  },
+  previewTitle: {
+    fontSize: 16,
+    fontWeight: "700",
+    marginBottom: 4,
+  },
+  previewSubtitle: {
+    color: "#666",
+    fontSize: 13,
   },
   form: {
     padding: 16,
