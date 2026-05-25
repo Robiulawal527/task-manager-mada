@@ -1,40 +1,64 @@
-import React, { useEffect, useRef, useState } from "react";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { Ionicons } from "@expo/vector-icons";
+import DraggableFlatList, { RenderItemParams } from "react-native-draggable-flatlist";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Platform,
-  View,
-  Text,
-  TextInput,
-  Button,
-  TouchableOpacity,
-  StyleSheet,
-  ScrollView,
   Alert,
   KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
-import {
-  GestureHandlerRootView,
-  PanGestureHandler,
-  State,
-} from "react-native-gesture-handler";
+
+type Priority = "Low" | "Medium" | "High" | "Urgent";
+type Screen = "dashboard" | "boards" | "board" | "add" | "list" | "notifications";
+
+type Comment = {
+  id: string;
+  author: string;
+  text: string;
+  createdAt: string;
+};
+
+type ActivityLog = {
+  id: string;
+  action: string;
+  createdAt: string;
+};
 
 type Task = {
   id: string;
   title: string;
+  description: string;
   assignedTo: string;
   requiredTime: string;
   deadline: string;
-  priority: string;
-  comments: string[];
-  logs: string[];
+  priority: Priority;
+  status: string;
+  reminderAt: string;
+  comments: Comment[];
+  logs: ActivityLog[];
   completed: boolean;
+  createdAt: string;
+  updatedAt: string;
+  notificationId?: string;
 };
 
 type NewTaskInput = {
   title: string;
+  description: string;
   assignedTo: string;
   requiredTime: string;
   deadline: string;
-  priority: string;
+  reminderAt: string;
+  priority: Priority;
 };
 
 type TaskList = {
@@ -46,31 +70,240 @@ type TaskList = {
 type Board = {
   id: string;
   title: string;
+  createdAt: string;
   lists: TaskList[];
+};
+
+type NotificationItem = {
+  id: string;
+  taskId?: string;
+  title: string;
+  message: string;
+  createdAt: string;
+  deliverAt: string;
+  read: boolean;
+  delivered: boolean;
 };
 
 type NotificationsModule = typeof import("expo-notifications");
 
-const createDefaultLists = (): TaskList[] => [
-  { id: "todo", title: "To Do", cards: [] },
-  { id: "doing", title: "Doing", cards: [] },
-  { id: "done", title: "Done", cards: [] },
+const STORAGE_KEY = "taskflow-mobile-state-v3";
+const DEFAULT_LISTS = [
+  { id: "todo", title: "To Do" },
+  { id: "in-progress", title: "In Progress" },
+  { id: "review", title: "Review" },
+  { id: "completed", title: "Completed" },
 ];
 
-const initialBoards: Board[] = [
-  { id: "board-1", title: "Project Board", lists: createDefaultLists() },
+const nowIso = () => new Date().toISOString();
+const makeId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+const createLog = (action: string): ActivityLog => ({
+  id: makeId("log"),
+  action,
+  createdAt: nowIso(),
+});
+
+const createDefaultLists = (): TaskList[] =>
+  DEFAULT_LISTS.map((list) => ({ ...list, cards: [] }));
+
+const createInitialBoards = (): Board[] => [
+  {
+    id: "board-1",
+    title: "TaskFlow Board",
+    createdAt: nowIso(),
+    lists: createDefaultLists(),
+  },
 ];
 
-export default function App() {
-  const [boards, setBoards] = useState<Board[]>(initialBoards);
-  const [activeBoardId, setActiveBoardId] = useState(initialBoards[0].id);
-  const [screen, setScreen] = useState<"board" | "add" | "list">("board");
+const formatDateTime = (value?: string) => {
+  if (!value) return "Not set";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+};
+
+const toInputDate = (value: Date) => {
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${value.getFullYear()}-${month}-${day}`;
+};
+
+const parseDateTime = (date: string, time: string) => {
+  const parsed = new Date(`${date.trim()}T${time.trim()}:00`);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const getTaskState = (task: Task) => {
+  if (task.completed) return "completed";
+  const deadline = new Date(task.deadline).getTime();
+  if (Number.isNaN(deadline)) return "normal";
+  const diff = deadline - Date.now();
+  if (diff <= 0) return "overdue";
+  if (diff <= 24 * 60 * 60 * 1000) return "soon";
+  if (diff <= 3 * 24 * 60 * 60 * 1000) return "upcoming";
+  return "normal";
+};
+
+const getRemainingTime = (task: Task) => {
+  if (task.completed) return "Completed";
+  const deadline = new Date(task.deadline).getTime();
+  if (Number.isNaN(deadline)) return "No deadline";
+  const diff = deadline - Date.now();
+  const abs = Math.abs(diff);
+  const days = Math.floor(abs / (24 * 60 * 60 * 1000));
+  const hours = Math.ceil((abs % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+  const label = days > 0 ? `${days}d ${hours}h` : `${Math.max(hours, 1)}h`;
+  return diff < 0 ? `${label} overdue` : `${label} left`;
+};
+
+const getPriorityTheme = (priority: Priority) => {
+  switch (priority) {
+    case "Low":
+      return { bg: "#dbeafe", text: "#1d4ed8" };
+    case "Medium":
+      return { bg: "#fef3c7", text: "#92400e" };
+    case "High":
+      return { bg: "#ffedd5", text: "#c2410c" };
+    case "Urgent":
+      return { bg: "#fee2e2", text: "#b91c1c" };
+  }
+};
+
+const getCardTheme = (task: Task) => {
+  switch (getTaskState(task)) {
+    case "completed":
+      return { bg: "#dcfce7", border: "#16a34a", accent: "#15803d" };
+    case "overdue":
+      return { bg: "#fee2e2", border: "#dc2626", accent: "#b91c1c" };
+    case "soon":
+      return { bg: "#ffedd5", border: "#f97316", accent: "#c2410c" };
+    case "upcoming":
+      return { bg: "#fef9c3", border: "#eab308", accent: "#a16207" };
+    default:
+      return { bg: "#ffffff", border: "#dbe3ef", accent: "#64748b" };
+  }
+};
+
+const getListTheme = (list: TaskList) => {
+  if (list.cards.length > 0 && list.cards.every((task) => task.completed)) {
+    return { bg: "#ecfdf5", border: "#bbf7d0", header: "#166534" };
+  }
+  if (list.cards.some((task) => getTaskState(task) === "overdue")) {
+    return { bg: "#fef2f2", border: "#fecaca", header: "#991b1b" };
+  }
+  if (list.cards.some((task) => getTaskState(task) === "soon")) {
+    return { bg: "#fff7ed", border: "#fed7aa", header: "#9a3412" };
+  }
+  if (list.cards.some((task) => getTaskState(task) === "upcoming")) {
+    return { bg: "#fefce8", border: "#fde68a", header: "#854d0e" };
+  }
+  return { bg: "#eef2f7", border: "#dbe3ef", header: "#0f172a" };
+};
+
+export default function TaskFlowApp() {
+  const [boards, setBoards] = useState<Board[]>(createInitialBoards());
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [activeBoardId, setActiveBoardId] = useState("board-1");
+  const [screen, setScreen] = useState<Screen>("dashboard");
   const [newBoardName, setNewBoardName] = useState("");
   const [newListName, setNewListName] = useState("");
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [commentText, setCommentText] = useState("");
+  const [commentAuthor, setCommentAuthor] = useState("");
+  const [hydrated, setHydrated] = useState(false);
   const notificationsRef = useRef<NotificationsModule | null>(null);
 
-  const ensureNotifications = async () => {
-    if (Platform.OS === "web") return;
+  const activeBoard = boards.find((board) => board.id === activeBoardId) ?? boards[0];
+
+  const allTasks = useMemo(
+    () =>
+      boards.flatMap((board) =>
+        board.lists.flatMap((list) =>
+          list.cards.map((task) => ({ ...task, boardId: board.id, boardTitle: board.title, listId: list.id }))
+        )
+      ),
+    [boards]
+  );
+
+  const dashboardStats = useMemo(() => {
+    const completed = allTasks.filter((task) => task.completed).length;
+    const overdue = allTasks.filter((task) => getTaskState(task) === "overdue").length;
+    return {
+      boards: boards.length,
+      tasks: allTasks.length,
+      completed,
+      overdue,
+      unread: notifications.filter((item) => !item.read).length,
+    };
+  }, [allTasks, boards.length, notifications]);
+
+  const persistState = useCallback(async (nextBoards: Board[], nextNotifications: NotificationItem[]) => {
+    await AsyncStorage.setItem(
+      STORAGE_KEY,
+      JSON.stringify({ boards: nextBoards, notifications: nextNotifications, activeBoardId })
+    );
+  }, [activeBoardId]);
+
+  useEffect(() => {
+    const loadState = async () => {
+      try {
+        const raw = await AsyncStorage.getItem(STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw) as {
+            boards?: Board[];
+            notifications?: NotificationItem[];
+            activeBoardId?: string;
+          };
+          if (parsed.boards?.length) {
+            setBoards(
+              parsed.boards.map((board) =>
+                board.title === "University Assignment Planner"
+                  ? { ...board, title: "TaskFlow Board" }
+                  : board
+              )
+            );
+            setActiveBoardId(parsed.activeBoardId ?? parsed.boards[0].id);
+          }
+          if (parsed.notifications) setNotifications(parsed.notifications);
+        }
+      } catch {
+        Alert.alert("Storage issue", "Saved data could not be loaded, so TaskFlow started with a fresh board.");
+      } finally {
+        setHydrated(true);
+      }
+    };
+
+    loadState();
+  }, []);
+
+  useEffect(() => {
+    if (hydrated) persistState(boards, notifications);
+  }, [boards, notifications, hydrated, persistState]);
+
+  const markDueNotificationsDelivered = useCallback(() => {
+    setNotifications((previous) =>
+      previous.map((item) => {
+        if (item.delivered || new Date(item.deliverAt).getTime() > Date.now()) return item;
+        return { ...item, delivered: true, read: false, createdAt: nowIso() };
+      })
+    );
+  }, []);
+
+  useEffect(() => {
+    markDueNotificationsDelivered();
+    const timer = setInterval(markDueNotificationsDelivered, 30000);
+    return () => clearInterval(timer);
+  }, [markDueNotificationsDelivered]);
+
+  const ensureNotifications = useCallback(async () => {
+    if (Platform.OS === "web") return null;
 
     const module = await import("expo-notifications");
     notificationsRef.current = module;
@@ -80,1239 +313,1807 @@ export default function App() {
         shouldShowBanner: true,
         shouldShowList: true,
         shouldPlaySound: true,
-        shouldSetBadge: false,
+        shouldSetBadge: true,
       }),
     });
 
-    try {
-      const current = await module.getPermissionsAsync();
-      if (current.status !== "granted") {
-        const requested = await module.requestPermissionsAsync();
-        if (requested.status !== "granted" && !requested.granted) {
-          Alert.alert(
-            "Notifications Disabled",
-            "Please enable notifications in system settings to receive reminders."
-          );
-        }
-      }
-
-      if (Platform.OS === "android") {
-        try {
-          await module.setNotificationChannelAsync("default", {
-            name: "Default",
-            importance: module.AndroidImportance?.MAX ?? 5,
-            sound: "default",
-          });
-        } catch {}
-      }
-    } catch {
-      // ignore permission errors in some environments (Expo Go web/dev)
+    const current = await module.getPermissionsAsync();
+    const finalStatus = current.status === "granted" ? current : await module.requestPermissionsAsync();
+    if (finalStatus.status !== "granted" && !finalStatus.granted) {
+      Alert.alert("Notifications disabled", "Enable notifications in system settings to receive task reminders.");
+      return module;
     }
-  };
 
-  useEffect(() => {
-    ensureNotifications();
+    if (Platform.OS === "android") {
+      await module.setNotificationChannelAsync("task-reminders", {
+        name: "Task reminders",
+        importance: module.AndroidImportance.MAX,
+        sound: "default",
+        vibrationPattern: [0, 250, 250, 250],
+      });
+    }
+
+    return module;
   }, []);
 
-  const activeBoard = boards.find((board) => board.id === activeBoardId) ?? boards[0];
+  useEffect(() => {
+    let subscription: { remove: () => void } | undefined;
+    ensureNotifications()
+      .then((module) => {
+        if (!module) return;
+        subscription = module.addNotificationReceivedListener((notification) => {
+          const taskId = notification.request.content.data?.taskId as string | undefined;
+          setNotifications((previous) =>
+            previous.map((item) =>
+              item.taskId === taskId
+                ? { ...item, delivered: true, read: false, createdAt: nowIso() }
+                : item
+            )
+          );
+        });
+      })
+      .catch(() => undefined);
 
-  const updateBoardLists = (lists: TaskList[]) => {
-    setBoards((prev) =>
-      prev.map((board) =>
-        board.id === activeBoard.id ? { ...board, lists } : board
-      )
-    );
-  };
+    return () => subscription?.remove();
+  }, [ensureNotifications]);
 
-  const dropZones = useRef<Record<string, { x: number; y: number; width: number; height: number }>>({});
-  const [draggingTask, setDraggingTask] = useState<Task | null>(null);
-  const [dragOriginListId, setDragOriginListId] = useState<string | null>(null);
-  const [dragPosition, setDragPosition] = useState({ x: 0, y: 0 });
-  const [activeDropListId, setActiveDropListId] = useState<string | null>(null);
-  const listRefs = useRef<Record<string, any | null>>({});
+  const scheduleReminder = async (task: Task) => {
+    const reminderDate = new Date(task.reminderAt);
+    if (Number.isNaN(reminderDate.getTime()) || reminderDate <= new Date()) return undefined;
 
-  const measureDropZones = () => {
-    Object.entries(listRefs.current).forEach(([listId, ref]) => {
-      if (!ref || typeof ref.measureInWindow !== "function") return;
-      ref.measureInWindow((x: number, y: number, width: number, height: number) => {
-        dropZones.current[listId] = { x, y, width, height };
+    const module = await ensureNotifications();
+    if (!module) return undefined;
+
+    try {
+      return await module.scheduleNotificationAsync({
+        content: {
+          title: "Task reminder",
+          body: `"${task.title}" is due soon.`,
+          data: { taskId: task.id },
+          sound: "default",
+        },
+        trigger: {
+          type: module.SchedulableTriggerInputTypes.DATE,
+          date: reminderDate,
+          channelId: "task-reminders",
+        },
       });
-    });
-  };
-
-  const findDropListForPosition = (x: number, y: number) => {
-    const zoneEntry = Object.entries(dropZones.current).find(([, zone]) => {
-      return x >= zone.x && x <= zone.x + zone.width && y >= zone.y && y <= zone.y + zone.height;
-    });
-    return zoneEntry ? zoneEntry[0] : null;
-  };
-
-  const moveTaskBetweenLists = (taskId: string, fromListId: string, toListId: string) => {
-    let movedTask: Task | null = null;
-
-    const nextLists = activeBoard.lists.map((list) => {
-      if (list.id !== fromListId) return list;
-
-      const remainingCards = list.cards.filter((card) => {
-        if (card.id === taskId) {
-          movedTask = card;
-          return false;
-        }
-        return true;
-      });
-
-      return { ...list, cards: remainingCards };
-    });
-
-    if (!movedTask) {
-      return;
+    } catch {
+      Alert.alert("Reminder issue", "The task was saved, but the device notification could not be scheduled.");
+      return undefined;
     }
-
-    const taskToAdd = movedTask as Task;
-    if (fromListId === toListId) {
-      updateBoardLists(nextLists);
-      return;
-    }
-
-    const completedTask =
-      toListId === "done" && !taskToAdd.completed
-        ? {
-            ...taskToAdd,
-            completed: true,
-            logs: [
-              ...taskToAdd.logs,
-              `Moved to Done at ${new Date().toLocaleString()}`,
-            ],
-          }
-        : taskToAdd;
-
-    updateBoardLists(
-      nextLists.map((list) =>
-        list.id === toListId
-          ? { ...list, cards: [...list.cards, completedTask] }
-          : list
-      )
-    );
   };
 
-  const handleDragMove = (x: number, y: number) => {
-    setDragPosition({ x, y });
-    const target = findDropListForPosition(x, y);
-    setActiveDropListId(target);
+  const addNotificationForTask = (task: Task, delivered = false) => {
+    const item: NotificationItem = {
+      id: makeId("notification"),
+      taskId: task.id,
+      title: "Task reminder",
+      message: `"${task.title}" is due soon.`,
+      createdAt: nowIso(),
+      deliverAt: task.reminderAt,
+      read: false,
+      delivered,
+    };
+    setNotifications((previous) => [item, ...previous]);
   };
 
-  const handleDragEnd = () => {
-    if (draggingTask && dragOriginListId && activeDropListId) {
-      moveTaskBetweenLists(draggingTask.id, dragOriginListId, activeDropListId);
-    }
-    setDraggingTask(null);
-    setDragOriginListId(null);
-    setActiveDropListId(null);
-    setDragPosition({ x: 0, y: 0 });
-  };
-
-  const startDrag = (task: Task, listId: string, x: number, y: number) => {
-    setDraggingTask(task);
-    setDragOriginListId(listId);
-    setDragPosition({ x, y });
-    setActiveDropListId(listId);
-    measureDropZones();
-  };
-
-  const addTaskLog = (taskId: string) => {
-    updateBoardLists(
-      activeBoard.lists.map((current) => ({
-        ...current,
-        cards: current.cards.map((item) =>
-          item.id === taskId
-            ? {
-                ...item,
-                logs: [
-                  ...item.logs,
-                  `Note added at ${new Date().toLocaleString()}`,
-                ],
-              }
-            : item
-        ),
+  const updateTask = (taskId: string, updater: (task: Task) => Task) => {
+    setBoards((previous) =>
+      previous.map((board) => ({
+        ...board,
+        lists: board.lists.map((list) => ({
+          ...list,
+          cards: list.cards.map((task) => (task.id === taskId ? updater(task) : task)),
+        })),
       }))
     );
   };
 
-  const addTask = async (task: NewTaskInput) => {
-    const newTask: Task = {
-      id: Date.now().toString(),
-      title: task.title,
-      assignedTo: task.assignedTo,
-      requiredTime: task.requiredTime,
-      deadline: task.deadline,
-      priority: task.priority,
-      comments: [],
-      logs: [`Task created at ${new Date().toLocaleString()}`],
-      completed: false,
-    };
-
-    updateBoardLists(
-      activeBoard.lists.map((list) =>
-        list.id === "todo"
-          ? { ...list, cards: [...list.cards, newTask] }
-          : list
-      )
-    );
-
-    await scheduleReminder(newTask);
-  };
-
-  const scheduleReminder = async (task: Task) => {
-    const deadlineDate = new Date(task.deadline);
-    const now = new Date();
-
-    if (isNaN(deadlineDate.getTime()) || deadlineDate <= now) return;
-
-    const reminderTime = new Date(deadlineDate.getTime() - 60 * 60 * 1000);
-    const bodyText = reminderTime <= now
-      ? `${task.title} is due in less than an hour!`
-      : `${task.title} is due in one hour!`;
-
-    if (!notificationsRef.current) return;
-
-    const secondsUntilTrigger = Math.max(
-      Math.floor((reminderTime.getTime() - now.getTime()) / 1000),
-      1
-    );
-
-    try {
-      await notificationsRef.current.scheduleNotificationAsync({
-        content: {
-          title: "Task Reminder",
-          body: bodyText,
-          data: { taskId: task.id },
-        },
-        trigger: { seconds: secondsUntilTrigger, repeats: false } as any,
-      });
-    } catch {
-      // ignore scheduling failures for now
-    }
-  };
-
-  const sendTestNotification = async () => {
-    await ensureNotifications();
-
-    if (!notificationsRef.current) {
-      Alert.alert("Notifications unavailable", "Notifications are not available on this platform.");
-      return;
-    }
-
-    try {
-      await notificationsRef.current.scheduleNotificationAsync({
-        content: { title: "Test Reminder", body: "This is a test notification." },
-        trigger: { seconds: 1, repeats: false } as any,
-      });
-    } catch {
-      Alert.alert("Error", "Failed to send test notification.");
-    }
-  };
-
-  const moveToDone = (cardId: string) => {
-    let movedTask: Task | null = null;
-
-    const nextLists = activeBoard.lists.map((list) => {
-      const remainingCards = list.cards.filter((card) => {
-        if (card.id === cardId) {
-          movedTask = {
-            ...card,
-            completed: true,
-            logs: [
-              ...card.logs,
-              `Task completed at ${new Date().toLocaleString()}`,
-            ],
-          };
-          return false;
-        }
-        return true;
-      });
-
-      return { ...list, cards: remainingCards };
-    });
-
-    updateBoardLists(
-      nextLists.map((list) =>
-        list.id === "done" && movedTask
-          ? { ...list, cards: [...list.cards, movedTask] }
-          : list
-      )
-    );
-  };
-
-  const activeBoardLists = activeBoard.lists;
-  const totalTasks = activeBoardLists.reduce((sum, list) => sum + list.cards.length, 0);
-  const overdueCount = activeBoardLists
-    .flatMap((list) => list.cards)
-    .filter((task) => {
-      const deadline = new Date(task.deadline);
-      return !task.completed && !isNaN(deadline.getTime()) && deadline < new Date();
-    }).length;
-  const dueSoonCount = activeBoardLists
-    .flatMap((list) => list.cards)
-    .filter((task) => {
-      const deadline = new Date(task.deadline);
-      const diff = deadline.getTime() - Date.now();
-      return !task.completed && diff > 0 && diff <= 24 * 60 * 60 * 1000;
-    }).length;
-
   const addBoard = () => {
-    if (!newBoardName.trim()) {
-      Alert.alert("Error", "Board name is required.");
+    const title = newBoardName.trim();
+    if (!title) {
+      Alert.alert("Board name required", "Give the board a short, useful name.");
       return;
     }
 
     const board: Board = {
-      id: Date.now().toString(),
-      title: newBoardName.trim(),
+      id: makeId("board"),
+      title,
+      createdAt: nowIso(),
       lists: createDefaultLists(),
     };
-
-    setBoards((prev) => [...prev, board]);
+    setBoards((previous) => [...previous, board]);
     setActiveBoardId(board.id);
     setNewBoardName("");
     setScreen("board");
   };
 
-  const addList = () => {
-    if (!newListName.trim()) {
-      Alert.alert("Error", "List name is required.");
+  const deleteBoard = (boardId: string) => {
+    if (boards.length === 1) {
+      Alert.alert("Keep one board", "TaskFlow needs at least one board.");
       return;
     }
 
-    updateBoardLists([
-      ...activeBoard.lists,
-      { id: Date.now().toString(), title: newListName.trim(), cards: [] },
+    Alert.alert("Delete board?", "This removes its lists, tasks, comments, and logs from this phone.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: () => {
+          setBoards((previous) => {
+            const next = previous.filter((board) => board.id !== boardId);
+            if (boardId === activeBoardId) setActiveBoardId(next[0].id);
+            return next;
+          });
+        },
+      },
     ]);
+  };
+
+  const addList = () => {
+    const title = newListName.trim();
+    if (!title || !activeBoard) {
+      Alert.alert("List name required", "Name the list before adding it.");
+      return;
+    }
+
+    setBoards((previous) =>
+      previous.map((board) =>
+        board.id === activeBoard.id
+          ? { ...board, lists: [...board.lists, { id: makeId("list"), title, cards: [] }] }
+          : board
+      )
+    );
     setNewListName("");
   };
 
+  const addTask = async (input: NewTaskInput) => {
+    if (!activeBoard) return;
+    const createdAt = nowIso();
+    const newTask: Task = {
+      id: makeId("task"),
+      title: input.title.trim(),
+      description: input.description.trim(),
+      assignedTo: input.assignedTo.trim(),
+      requiredTime: input.requiredTime.trim(),
+      deadline: input.deadline,
+      priority: input.priority,
+      status: "To Do",
+      reminderAt: input.reminderAt,
+      comments: [],
+      logs: [createLog("Task created")],
+      completed: false,
+      createdAt,
+      updatedAt: createdAt,
+    };
+
+    const notificationId = await scheduleReminder(newTask);
+    const taskWithNotification = notificationId ? { ...newTask, notificationId } : newTask;
+
+    setBoards((previous) =>
+      previous.map((board) =>
+        board.id === activeBoard.id
+          ? {
+              ...board,
+              lists: board.lists.map((list, index) =>
+                index === 0 ? { ...list, cards: [...list.cards, taskWithNotification] } : list
+              ),
+            }
+          : board
+      )
+    );
+    addNotificationForTask(taskWithNotification);
+    setScreen("board");
+  };
+
+  const deleteTask = (taskId: string) => {
+    Alert.alert("Delete task?", "This removes the task, comments, logs, and reminder from this phone.", [
+      { text: "Cancel", style: "cancel" },
+      {
+        text: "Delete",
+        style: "destructive",
+        onPress: async () => {
+          const task = allTasks.find((item) => item.id === taskId);
+          if (task?.notificationId && notificationsRef.current) {
+            await notificationsRef.current.cancelScheduledNotificationAsync(task.notificationId).catch(() => undefined);
+          }
+          setBoards((previous) =>
+            previous.map((board) => ({
+              ...board,
+              lists: board.lists.map((list) => ({
+                ...list,
+                cards: list.cards.filter((card) => card.id !== taskId),
+              })),
+            }))
+          );
+          setNotifications((previous) => previous.filter((item) => item.taskId !== taskId));
+          setSelectedTask(null);
+        },
+      },
+    ]);
+  };
+
+  const reorderList = (listId: string, cards: Task[]) => {
+    if (!activeBoard) return;
+    setBoards((previous) =>
+      previous.map((board) =>
+        board.id === activeBoard.id
+          ? { ...board, lists: board.lists.map((list) => (list.id === listId ? { ...list, cards } : list)) }
+          : board
+      )
+    );
+  };
+
+  const moveTaskToList = (taskId: string, targetListId: string) => {
+    let movedTask: Task | undefined;
+    const targetList = activeBoard?.lists.find((list) => list.id === targetListId);
+    if (!activeBoard || !targetList) return;
+
+    setBoards((previous) =>
+      previous.map((board) => {
+        if (board.id !== activeBoard.id) return board;
+        const listsWithoutTask = board.lists.map((list) => {
+          const remaining = list.cards.filter((task) => {
+            if (task.id === taskId) {
+              movedTask = task;
+              return false;
+            }
+            return true;
+          });
+          return { ...list, cards: remaining };
+        });
+
+        if (!movedTask) return board;
+        const completed = targetList.title.toLowerCase() === "completed";
+        const taskToAdd: Task = {
+          ...movedTask,
+          status: targetList.title,
+          completed,
+          updatedAt: nowIso(),
+          logs: [...movedTask.logs, createLog(`Task moved to ${targetList.title}`)],
+        };
+
+        return {
+          ...board,
+          lists: listsWithoutTask.map((list) =>
+            list.id === targetListId ? { ...list, cards: [...list.cards, taskToAdd] } : list
+          ),
+        };
+      })
+    );
+  };
+
+  const toggleComplete = (taskId: string, completed: boolean) => {
+    const completedList = activeBoard?.lists.find((list) => list.title.toLowerCase() === "completed");
+    if (completed && completedList) {
+      moveTaskToList(taskId, completedList.id);
+      return;
+    }
+
+    updateTask(taskId, (task) => ({
+      ...task,
+      completed,
+      updatedAt: nowIso(),
+      logs: [...task.logs, createLog(completed ? "Task marked as completed" : "Task marked as incomplete")],
+    }));
+    setSelectedTask((task) =>
+      task?.id === taskId
+        ? {
+            ...task,
+            completed,
+            updatedAt: nowIso(),
+            logs: [...task.logs, createLog(completed ? "Task marked as completed" : "Task marked as incomplete")],
+          }
+        : task
+    );
+  };
+
+  const addComment = () => {
+    if (!selectedTask || !commentText.trim()) return;
+    const comment: Comment = {
+      id: makeId("comment"),
+      author: commentAuthor.trim() || "You",
+      text: commentText.trim(),
+      createdAt: nowIso(),
+    };
+    const nextTask = (task: Task): Task => ({
+      ...task,
+      comments: [...task.comments, comment],
+      logs: [...task.logs, createLog("Comment added")],
+      updatedAt: nowIso(),
+    });
+    updateTask(selectedTask.id, nextTask);
+    setSelectedTask(nextTask(selectedTask));
+    setCommentText("");
+    setCommentAuthor("");
+  };
+
+  const sendTestNotification = async () => {
+    const module = await ensureNotifications();
+    if (!module) {
+      Alert.alert("Web preview", "Device notifications are available on iOS and Android builds.");
+      return;
+    }
+
+    try {
+      await module.scheduleNotificationAsync({
+        content: { title: "TaskFlow test", body: "Notifications are ready.", sound: "default" },
+        trigger: { type: module.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 1, channelId: "task-reminders" },
+      });
+      setNotifications((previous) => [
+        {
+          id: makeId("notification"),
+          title: "TaskFlow test",
+          message: "Notifications are ready.",
+          createdAt: nowIso(),
+          deliverAt: nowIso(),
+          read: false,
+          delivered: true,
+        },
+        ...previous,
+      ]);
+    } catch {
+      Alert.alert("Notification failed", "Expo could not schedule the test notification on this device.");
+    }
+  };
+
+  const selectedTaskLive = selectedTask ? allTasks.find((task) => task.id === selectedTask.id) ?? selectedTask : null;
+
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === "ios" ? "padding" : "height"}
-    >
-      <GestureHandlerRootView style={styles.container}>
-        <View style={styles.header}>
-          <View style={styles.headerTop}>
-            <View>
-              <Text style={styles.title}>Task Manager</Text>
-              <Text style={styles.subtitle}>{activeBoard.title}</Text>
-            </View>
-            <TouchableOpacity style={styles.testButton} onPress={sendTestNotification}>
-              <Text style={styles.testButtonText}>Ping</Text>
-            </TouchableOpacity>
-          </View>
+    <KeyboardAvoidingView style={styles.shell} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <View style={styles.app}>
+        <Header
+          activeBoardTitle={activeBoard?.title ?? "TaskFlow"}
+          unread={dashboardStats.unread}
+          onNotify={() => setScreen("notifications")}
+          onTestNotification={sendTestNotification}
+        />
 
-          <View style={styles.heroRow}>
-            <View style={styles.heroCard}>
-              <Text style={styles.heroValue}>{boards.length}</Text>
-              <Text style={styles.heroLabel}>Boards</Text>
-            </View>
-            <View style={styles.heroCard}>
-              <Text style={styles.heroValue}>{totalTasks}</Text>
-              <Text style={styles.heroLabel}>Total Tasks</Text>
-            </View>
-            <View style={styles.heroCard}>
-              <Text style={styles.heroValue}>{dueSoonCount}</Text>
-              <Text style={styles.heroLabel}>Due Soon</Text>
-              {overdueCount > 0 && <Text style={styles.heroSubtitle}>{overdueCount} overdue</Text>}
-            </View>
-          </View>
-        </View>
+        <NavBar screen={screen} setScreen={setScreen} />
 
-        <View style={styles.tabContainer}>
-          <View style={styles.tabRow}>
-            {(["board", "add", "list"] as const).map((mode) => (
-              <TouchableOpacity
-                key={mode}
-                style={[
-                  styles.tabButton,
-                  screen === mode && styles.tabButtonActive,
-                ]}
-                onPress={() => setScreen(mode)}
-              >
-                <Text
-                  style={
-                    screen === mode ? styles.tabTextActive : styles.tabText
-                  }
-                >
-                  {mode === "board" ? "Board" : mode === "add" ? "Add Task" : "List"}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-
-        <View style={styles.selectorRow}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.selectorScroll}>
-            {boards.map((board) => (
-              <TouchableOpacity
-                key={board.id}
-                style={[
-                  styles.selectorButton,
-                  board.id === activeBoard.id && styles.selectorButtonActive,
-                ]}
-                onPress={() => setActiveBoardId(board.id)}
-              >
-                <Text
-                  style={
-                    board.id === activeBoard.id
-                      ? styles.selectorTextActive
-                      : styles.selectorText
-                  }
-                >
-                  {board.title}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </ScrollView>
-        </View>
-
-        {screen === "board" && (
-          <View style={styles.addInlineRow}>
-            <TextInput
-              style={styles.addInlineInput}
-              placeholder="New board name..."
-              placeholderTextColor="#94a3b8"
-              value={newBoardName}
-              onChangeText={setNewBoardName}
-            />
-            <TouchableOpacity style={styles.addInlineBtn} onPress={addBoard}>
-              <Text style={styles.addInlineBtnText}>+ Board</Text>
-            </TouchableOpacity>
-          </View>
+        {screen === "dashboard" && (
+          <Dashboard stats={dashboardStats} setScreen={setScreen} />
         )}
 
-        {screen === "board" && (
-          <View style={styles.boardView}>
-            <View style={styles.addInlineRow}>
-              <TextInput
-                style={styles.addInlineInput}
-                placeholder="New list name..."
-                placeholderTextColor="#94a3b8"
-                value={newListName}
-                onChangeText={setNewListName}
-              />
-              <TouchableOpacity style={styles.addInlineBtn} onPress={addList}>
-                <Text style={styles.addInlineBtnText}>+ List</Text>
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView
-              horizontal
-              style={styles.board}
-              contentContainerStyle={styles.boardContent}
-              showsHorizontalScrollIndicator={false}
-            >
-              {activeBoardLists.map((list) => (
-                <View
-                  key={list.id}
-                  ref={(ref) => {
-                    listRefs.current[list.id] = ref;
-                  }}
-                  onLayout={measureDropZones}
-                  style={
-                    activeDropListId === list.id
-                      ? [styles.column, styles.dropHighlight]
-                      : styles.column
-                  }
-                >
-                  <View style={styles.columnHeader}>
-                    <Text style={styles.columnTitle}>{list.title}</Text>
-                    <View style={styles.listCountBadge}>
-                      <Text style={styles.listCountText}>{list.cards.length}</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.columnBody}>
-                    {list.cards.map((card) => (
-                      <PanGestureHandler
-                        key={card.id}
-                        minDist={10}
-                        shouldCancelWhenOutside={false}
-                        onGestureEvent={({ nativeEvent }) => {
-                          if (draggingTask?.id === card.id) {
-                            handleDragMove(nativeEvent.absoluteX, nativeEvent.absoluteY);
-                          }
-                        }}
-                        onHandlerStateChange={({ nativeEvent }) => {
-                          if (nativeEvent.state === State.BEGAN) {
-                            startDrag(card, list.id, nativeEvent.absoluteX, nativeEvent.absoluteY);
-                          }
-
-                          if (
-                            nativeEvent.state === State.END ||
-                            nativeEvent.state === State.CANCELLED ||
-                            nativeEvent.state === State.FAILED
-                          ) {
-                            handleDragEnd();
-                          }
-                        }}
-                      >
-                        <View
-                          style={[
-                            styles.cardContainer,
-                            { opacity: draggingTask?.id === card.id ? 0.4 : 1 },
-                          ]}
-                        >
-                          <TaskCard
-                            task={card}
-                            moveToDone={moveToDone}
-                            addTaskLog={addTaskLog}
-                          />
-                        </View>
-                      </PanGestureHandler>
-                    ))}
-                  </View>
-                </View>
-              ))}
-            </ScrollView>
-
-            {draggingTask && (
-              <View
-                style={[
-                  styles.dragPreview,
-                  {
-                    left: dragPosition.x - 140,
-                    top: dragPosition.y - 40,
-                  },
-                ]}
-              >
-                <Text style={styles.previewTitle} numberOfLines={1}>{draggingTask.title}</Text>
-                <Text style={styles.previewSubtitle}>{draggingTask.assignedTo || "Unassigned"}</Text>
-              </View>
-            )}
-          </View>
+        {screen === "boards" && (
+          <BoardsScreen
+            boards={boards}
+            activeBoardId={activeBoard?.id}
+            newBoardName={newBoardName}
+            setNewBoardName={setNewBoardName}
+            addBoard={addBoard}
+            openBoard={(id) => {
+              setActiveBoardId(id);
+              setScreen("board");
+            }}
+            deleteBoard={deleteBoard}
+          />
         )}
 
-        {screen === "add" && <AddTaskScreen addTask={addTask} />}
+        {screen === "board" && activeBoard && (
+          <BoardScreen
+            board={activeBoard}
+            newListName={newListName}
+            setNewListName={setNewListName}
+            addList={addList}
+            reorderList={reorderList}
+            moveTaskToList={moveTaskToList}
+            openTask={setSelectedTask}
+          />
+        )}
+
+        {screen === "add" && (
+          <AddTaskScreen addTask={addTask} />
+        )}
 
         {screen === "list" && (
-          <ListViewScreen lists={activeBoardLists} moveToDone={moveToDone} addTaskLog={addTaskLog} />
+          <ListViewScreen boards={boards} openTask={setSelectedTask} />
         )}
-      </GestureHandlerRootView>
+
+        {screen === "notifications" && (
+          <NotificationCenter
+            notifications={notifications}
+            markRead={(id) =>
+              setNotifications((previous) =>
+                previous.map((item) => (item.id === id ? { ...item, read: true } : item))
+              )
+            }
+            markAllRead={() =>
+              setNotifications((previous) => previous.map((item) => ({ ...item, read: true })))
+            }
+          />
+        )}
+
+        <TaskDetailsModal
+          task={selectedTaskLive}
+          lists={activeBoard?.lists ?? []}
+          close={() => setSelectedTask(null)}
+          moveTaskToList={moveTaskToList}
+          toggleComplete={toggleComplete}
+          deleteTask={deleteTask}
+          commentAuthor={commentAuthor}
+          setCommentAuthor={setCommentAuthor}
+          commentText={commentText}
+          setCommentText={setCommentText}
+          addComment={addComment}
+        />
+      </View>
     </KeyboardAvoidingView>
   );
 }
 
-function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<void> }) {
-  const formatDate = (value: Date) => {
-    const month = String(value.getMonth() + 1).padStart(2, "0");
-    const day = String(value.getDate()).padStart(2, "0");
-    return `${value.getFullYear()}-${month}-${day}`;
+function Header({
+  activeBoardTitle,
+  unread,
+  onNotify,
+  onTestNotification,
+}: {
+  activeBoardTitle: string;
+  unread: number;
+  onNotify: () => void;
+  onTestNotification: () => void;
+}) {
+  return (
+    <View style={styles.header}>
+      <View>
+        <Text style={styles.kicker}>TaskFlow Mobile</Text>
+        <Text style={styles.title}>{activeBoardTitle}</Text>
+      </View>
+      <View style={styles.headerActions}>
+        <IconButton icon="notifications-outline" label={unread > 0 ? `${unread}` : ""} onPress={onNotify} />
+        <IconButton icon="radio-outline" onPress={onTestNotification} />
+      </View>
+    </View>
+  );
+}
+
+function NavBar({ screen, setScreen }: { screen: Screen; setScreen: (screen: Screen) => void }) {
+  const items: { key: Screen; icon: keyof typeof Ionicons.glyphMap; label: string }[] = [
+    { key: "dashboard", icon: "grid-outline", label: "Home" },
+    { key: "boards", icon: "albums-outline", label: "Boards" },
+    { key: "board", icon: "reader-outline", label: "Board" },
+    { key: "add", icon: "add-circle-outline", label: "Task" },
+    { key: "list", icon: "list-outline", label: "List" },
+  ];
+
+  return (
+    <View style={styles.navWrap}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.nav}>
+        {items.map((item) => {
+          const active = screen === item.key;
+          return (
+            <TouchableOpacity
+              key={item.key}
+              style={[styles.navButton, active && styles.navButtonActive]}
+              onPress={() => setScreen(item.key)}
+            >
+              <Ionicons name={item.icon} size={17} color={active ? "#ffffff" : "#475569"} />
+              <Text style={[styles.navText, active && styles.navTextActive]}>{item.label}</Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+}
+
+function Dashboard({
+  stats,
+  setScreen,
+}: {
+  stats: { boards: number; tasks: number; completed: number; overdue: number; unread: number };
+  setScreen: (screen: Screen) => void;
+}) {
+  const cards = [
+    { label: "Total Boards", value: stats.boards, icon: "albums-outline" },
+    { label: "Total Tasks", value: stats.tasks, icon: "checkbox-outline" },
+    { label: "Completed Tasks", value: stats.completed, icon: "checkmark-done-outline" },
+    { label: "Overdue Tasks", value: stats.overdue, icon: "alert-circle-outline" },
+  ] as const;
+
+  return (
+    <ScrollView style={styles.screen} contentContainerStyle={styles.dashboardContent}>
+      <View style={styles.statGrid}>
+        {cards.map((card) => (
+          <View key={card.label} style={styles.statCard}>
+            <Ionicons name={card.icon} size={22} color="#0f172a" />
+            <Text style={styles.statValue}>{card.value}</Text>
+            <Text style={styles.statLabel}>{card.label}</Text>
+          </View>
+        ))}
+      </View>
+
+      <View style={styles.quickActions}>
+        <QuickAction icon="albums-outline" label="Open Boards" onPress={() => setScreen("boards")} />
+        <QuickAction icon="list-outline" label="Open List View" onPress={() => setScreen("list")} />
+        <QuickAction icon="notifications-outline" label="Open Notifications" onPress={() => setScreen("notifications")} />
+      </View>
+    </ScrollView>
+  );
+}
+
+function BoardsScreen({
+  boards,
+  activeBoardId,
+  newBoardName,
+  setNewBoardName,
+  addBoard,
+  openBoard,
+  deleteBoard,
+}: {
+  boards: Board[];
+  activeBoardId?: string;
+  newBoardName: string;
+  setNewBoardName: (value: string) => void;
+  addBoard: () => void;
+  openBoard: (id: string) => void;
+  deleteBoard: (id: string) => void;
+}) {
+  return (
+    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      <View style={styles.inlineForm}>
+        <TextInput
+          style={styles.inlineInput}
+          placeholder="New board name"
+          placeholderTextColor="#94a3b8"
+          value={newBoardName}
+          onChangeText={setNewBoardName}
+        />
+        <TouchableOpacity style={styles.primarySmallButton} onPress={addBoard}>
+          <Ionicons name="add" size={18} color="#ffffff" />
+        </TouchableOpacity>
+      </View>
+
+      {boards.map((board) => {
+        const total = board.lists.reduce((sum, list) => sum + list.cards.length, 0);
+        return (
+          <TouchableOpacity key={board.id} style={styles.boardCard} onPress={() => openBoard(board.id)}>
+            <View style={styles.boardCardMain}>
+              <View style={[styles.boardIcon, board.id === activeBoardId && styles.boardIconActive]}>
+                <Ionicons name="albums-outline" size={20} color={board.id === activeBoardId ? "#ffffff" : "#0f172a"} />
+              </View>
+              <View style={styles.flexOne}>
+                <Text style={styles.boardTitle}>{board.title}</Text>
+                <Text style={styles.boardMeta}>Tasks: {total}</Text>
+              </View>
+            </View>
+            <TouchableOpacity style={styles.dangerIconButton} onPress={() => deleteBoard(board.id)}>
+              <Ionicons name="trash-outline" size={18} color="#dc2626" />
+            </TouchableOpacity>
+          </TouchableOpacity>
+        );
+      })}
+    </ScrollView>
+  );
+}
+
+function BoardScreen({
+  board,
+  newListName,
+  setNewListName,
+  addList,
+  reorderList,
+  moveTaskToList,
+  openTask,
+}: {
+  board: Board;
+  newListName: string;
+  setNewListName: (value: string) => void;
+  addList: () => void;
+  reorderList: (listId: string, cards: Task[]) => void;
+  moveTaskToList: (taskId: string, listId: string) => void;
+  openTask: (task: Task) => void;
+}) {
+  const [draggedTask, setDraggedTask] = useState<{ task: Task; listId: string } | null>(null);
+  const moveTargets = draggedTask
+    ? board.lists.filter((list) => list.id !== draggedTask.listId)
+    : [];
+
+  const moveDraggedTask = (targetListId: string) => {
+    if (!draggedTask) return;
+    moveTaskToList(draggedTask.task.id, targetListId);
+    setDraggedTask(null);
   };
 
+  return (
+    <View style={styles.boardScreen}>
+      <View style={styles.inlineForm}>
+        <TextInput
+          style={styles.inlineInput}
+          placeholder="Create a custom list"
+          placeholderTextColor="#94a3b8"
+          value={newListName}
+          onChangeText={setNewListName}
+        />
+        <TouchableOpacity style={styles.primarySmallButton} onPress={addList}>
+          <Ionicons name="add" size={18} color="#ffffff" />
+        </TouchableOpacity>
+      </View>
+
+      {draggedTask && (
+        <View style={styles.dropRail}>
+          <View style={styles.dropRailTitleRow}>
+            <Ionicons name="hand-left-outline" size={16} color="#0f172a" />
+            <Text style={styles.dropRailTitle} numberOfLines={1}>
+              {`Move ${draggedTask.task.title}`}
+            </Text>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dropRailTargets}>
+            {moveTargets.map((list) => (
+              <TouchableOpacity key={list.id} style={styles.dropTargetButton} onPress={() => moveDraggedTask(list.id)}>
+                <Text style={styles.dropTargetText}>{list.title}</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity style={styles.dropCancelButton} onPress={() => setDraggedTask(null)}>
+              <Ionicons name="close" size={16} color="#475569" />
+            </TouchableOpacity>
+          </ScrollView>
+        </View>
+      )}
+
+      <ScrollView horizontal style={styles.boardScroller} contentContainerStyle={styles.boardContent} showsHorizontalScrollIndicator={false}>
+        {board.lists.map((list) => {
+          const listTheme = getListTheme(list);
+          return (
+          <View key={list.id} style={[styles.column, { backgroundColor: listTheme.bg, borderColor: listTheme.border }]}>
+            <View style={styles.columnHeader}>
+              <Text style={[styles.columnTitle, { color: listTheme.header }]}>{list.title}</Text>
+              <Text style={styles.countBadge}>{list.cards.length}</Text>
+            </View>
+            <DraggableFlatList
+              data={list.cards}
+              keyExtractor={(item) => item.id}
+              scrollEnabled={false}
+              activationDistance={12}
+              onDragBegin={(index) => {
+                const task = list.cards[index];
+                if (task) setDraggedTask({ task, listId: list.id });
+              }}
+              onDragEnd={({ data }) => reorderList(list.id, data)}
+              renderItem={({ item, drag, isActive }: RenderItemParams<Task>) => (
+                <TaskCard
+                  task={item}
+                  lists={board.lists}
+                  currentListId={list.id}
+                  onMove={moveTaskToList}
+                  onOpen={() => openTask(item)}
+                  onLongPress={drag}
+                  dragging={isActive}
+                />
+              )}
+              ListEmptyComponent={<Text style={styles.emptyColumnText}>No tasks yet</Text>}
+            />
+          </View>
+        );})}
+      </ScrollView>
+    </View>
+  );
+}
+
+function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<void> }) {
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  const reminder = new Date(Date.now() + 60 * 60 * 1000);
   const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
   const [assignedTo, setAssignedTo] = useState("");
   const [requiredTime, setRequiredTime] = useState("");
-  const [deadlineDate, setDeadlineDate] = useState(formatDate(new Date()));
+  const [deadlineDate, setDeadlineDate] = useState(toInputDate(tomorrow));
   const [deadlineTime, setDeadlineTime] = useState("18:00");
-  const [priority, setPriority] = useState("Medium");
+  const [reminderDate, setReminderDate] = useState(toInputDate(reminder));
+  const [reminderTime, setReminderTime] = useState("17:00");
+  const [priority, setPriority] = useState<Priority>("Medium");
 
-  const applyPreset = (date: Date, time: string) => {
-    setDeadlineDate(formatDate(date));
-    setDeadlineTime(time);
-  };
-
-  const submit = () => {
-    const deadline = `${deadlineDate.trim()} ${deadlineTime.trim()}`;
-    if (!title || !deadlineDate || !deadlineTime) {
-      Alert.alert("Hold on", "Task title and deadline are required.");
+  const submit = async () => {
+    const deadline = parseDateTime(deadlineDate, deadlineTime);
+    const reminderAt = parseDateTime(reminderDate, reminderTime);
+    if (!title.trim()) {
+      Alert.alert("Task title required", "Add a clear title before saving.");
+      return;
+    }
+    if (!deadline || !reminderAt) {
+      Alert.alert("Invalid date", "Use YYYY-MM-DD for dates and HH:MM for time.");
+      return;
+    }
+    if (reminderAt > deadline) {
+      Alert.alert("Reminder is after deadline", "Set the reminder before the deadline.");
       return;
     }
 
-    const parsed = new Date(deadline);
-    if (isNaN(parsed.getTime())) {
-      Alert.alert("Oops", "Please enter a valid deadline in YYYY-MM-DD and HH:MM format.");
-      return;
-    }
-
-    addTask({
+    await addTask({
       title,
+      description,
       assignedTo,
       requiredTime,
-      deadline,
+      deadline: deadline.toISOString(),
+      reminderAt: reminderAt.toISOString(),
       priority,
     });
 
     setTitle("");
+    setDescription("");
     setAssignedTo("");
     setRequiredTime("");
-    setDeadlineDate(formatDate(new Date()));
+    setDeadlineDate(toInputDate(tomorrow));
     setDeadlineTime("18:00");
+    setReminderDate(toInputDate(reminder));
+    setReminderTime("17:00");
     setPriority("Medium");
-
-    Alert.alert("Awesome", "Task added successfully!");
   };
 
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  const nextMonday = new Date();
-  nextMonday.setDate(nextMonday.getDate() + ((8 - nextMonday.getDay()) % 7 || 7));
-
   return (
-    <ScrollView style={styles.formContainer} contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled">
-      <Text style={styles.formSectionTitle}>Create New Task</Text>
-
-      <View style={styles.inputGroup}>
-        <Text style={styles.inputLabel}>Task Title</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="e.g. Design homepage..."
-          placeholderTextColor="#9ca3af"
-          value={title}
-          onChangeText={setTitle}
-        />
-      </View>
-
-      <View style={styles.inputGroup}>
-        <Text style={styles.inputLabel}>Assign User</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="e.g. Alex"
-          placeholderTextColor="#9ca3af"
-          value={assignedTo}
-          onChangeText={setAssignedTo}
-        />
-      </View>
-
-      <View style={styles.inputGroup}>
-        <Text style={styles.inputLabel}>Estimated Time</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="e.g. 3 hours"
-          placeholderTextColor="#9ca3af"
-          value={requiredTime}
-          onChangeText={setRequiredTime}
-        />
-      </View>
+    <ScrollView style={styles.screen} contentContainerStyle={styles.formContent} keyboardShouldPersistTaps="handled">
+      <FormInput label="Task Title" value={title} onChangeText={setTitle} placeholder="Design database schema" />
+      <FormInput label="Description" value={description} onChangeText={setDescription} placeholder="Add context, links, or acceptance notes" multiline />
+      <FormInput label="Assigned User" value={assignedTo} onChangeText={setAssignedTo} placeholder="Ashik" />
+      <FormInput label="Required Time" value={requiredTime} onChangeText={setRequiredTime} placeholder="3 hours" />
 
       <View style={styles.inputGroup}>
         <Text style={styles.inputLabel}>Deadline</Text>
-        <View style={styles.deadlineRow}>
-          <TextInput
-            style={[styles.input, styles.deadlineInput]}
-            placeholder="YYYY-MM-DD"
-            placeholderTextColor="#9ca3af"
-            value={deadlineDate}
-            onChangeText={setDeadlineDate}
-          />
-          <TextInput
-            style={[styles.input, styles.deadlineInput]}
-            placeholder="HH:MM"
-            placeholderTextColor="#9ca3af"
-            value={deadlineTime}
-            onChangeText={setDeadlineTime}
-          />
+        <View style={styles.doubleRow}>
+          <TextInput style={styles.input} value={deadlineDate} onChangeText={setDeadlineDate} placeholder="YYYY-MM-DD" placeholderTextColor="#94a3b8" />
+          <TextInput style={styles.input} value={deadlineTime} onChangeText={setDeadlineTime} placeholder="HH:MM" placeholderTextColor="#94a3b8" />
         </View>
-        <View style={styles.presetRow}>
-          <TouchableOpacity style={styles.presetBtn} onPress={() => applyPreset(new Date(), "18:00")}> 
-            <Text style={styles.presetBtnText}>Today 6 PM</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.presetBtn} onPress={() => applyPreset(tomorrow, "18:00")}> 
-            <Text style={styles.presetBtnText}>Tmrw 6 PM</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.presetBtn} onPress={() => applyPreset(nextMonday, "09:00")}> 
-            <Text style={styles.presetBtnText}>Mon 9 AM</Text>
-          </TouchableOpacity>
+      </View>
+
+      <View style={styles.inputGroup}>
+        <Text style={styles.inputLabel}>Reminder Time</Text>
+        <View style={styles.doubleRow}>
+          <TextInput style={styles.input} value={reminderDate} onChangeText={setReminderDate} placeholder="YYYY-MM-DD" placeholderTextColor="#94a3b8" />
+          <TextInput style={styles.input} value={reminderTime} onChangeText={setReminderTime} placeholder="HH:MM" placeholderTextColor="#94a3b8" />
         </View>
       </View>
 
       <View style={styles.inputGroup}>
         <Text style={styles.inputLabel}>Priority</Text>
-        <View style={styles.prioritySelector}>
-          {["Low", "Medium", "High"].map((p) => {
-            const isActive = priority.toLowerCase() === p.toLowerCase();
+        <View style={styles.priorityRow}>
+          {(["Low", "Medium", "High", "Urgent"] as Priority[]).map((item) => {
+            const theme = getPriorityTheme(item);
+            const active = priority === item;
             return (
               <TouchableOpacity
-                key={p}
-                style={[
-                  styles.priorityBtn,
-                  isActive && styles.priorityBtnActive,
-                  isActive && p === "High" && { backgroundColor: "#ffebee", borderColor: "#ef5350" },
-                  isActive && p === "Medium" && { backgroundColor: "#fff3e0", borderColor: "#ffa726" },
-                  isActive && p === "Low" && { backgroundColor: "#e8f5e9", borderColor: "#66bb6a" },
-                ]}
-                onPress={() => setPriority(p)}
+                key={item}
+                style={[styles.priorityButton, active && { backgroundColor: theme.bg, borderColor: theme.text }]}
+                onPress={() => setPriority(item)}
               >
-                <Text
-                  style={[
-                    styles.priorityBtnText,
-                    isActive && styles.priorityBtnTextActive,
-                    isActive && p === "High" && { color: "#d32f2f" },
-                    isActive && p === "Medium" && { color: "#f57c00" },
-                    isActive && p === "Low" && { color: "#388e3c" },
-                  ]}
-                >
-                  {p}
-                </Text>
+                <Text style={[styles.priorityButtonText, active && { color: theme.text }]}>{item}</Text>
               </TouchableOpacity>
             );
           })}
         </View>
       </View>
 
-      <TouchableOpacity style={styles.submitBtn} onPress={submit}>
-        <Text style={styles.submitBtnText}>Save Task</Text>
+      <TouchableOpacity style={styles.submitButton} onPress={submit}>
+        <Ionicons name="save-outline" size={18} color="#ffffff" />
+        <Text style={styles.submitButtonText}>Save Task</Text>
       </TouchableOpacity>
     </ScrollView>
   );
 }
 
-function ListViewScreen({ lists, moveToDone, addTaskLog }: { lists: TaskList[]; moveToDone: (cardId: string) => void; addTaskLog: (cardId: string) => void }) {
-  const allTasks = lists
-    .flatMap((list) => list.cards)
+function ListViewScreen({ boards, openTask }: { boards: Board[]; openTask: (task: Task) => void }) {
+  const [search, setSearch] = useState("");
+  const tasks = boards
+    .flatMap((board) =>
+      board.lists.flatMap((list) => list.cards.map((task) => ({ ...task, boardTitle: board.title, listTitle: list.title })))
+    )
+    .filter((task) => task.title.toLowerCase().includes(search.toLowerCase()))
     .sort((a, b) => new Date(a.deadline).getTime() - new Date(b.deadline).getTime());
 
   return (
-    <ScrollView style={styles.listView} contentContainerStyle={styles.listContent} keyboardShouldPersistTaps="handled">
-      {allTasks.map((task) => (
-        <View key={task.id} style={styles.listCardWrapper}>
-          <TaskCard task={task} moveToDone={moveToDone} addTaskLog={addTaskLog} />
+    <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <View style={styles.searchBox}>
+        <Ionicons name="search-outline" size={18} color="#64748b" />
+        <TextInput style={styles.searchInput} value={search} onChangeText={setSearch} placeholder="Search tasks by title" placeholderTextColor="#94a3b8" />
+      </View>
+      {tasks.map((task) => (
+        <View key={task.id} style={styles.listTaskWrap}>
+          <Text style={styles.contextText}>{task.boardTitle} / {task.listTitle}</Text>
+          <TaskCard task={task} onOpen={() => openTask(task)} />
         </View>
       ))}
+      {tasks.length === 0 && <Text style={styles.emptyText}>No matching tasks.</Text>}
     </ScrollView>
+  );
+}
+
+function NotificationCenter({
+  notifications,
+  markRead,
+  markAllRead,
+}: {
+  notifications: NotificationItem[];
+  markRead: (id: string) => void;
+  markAllRead: () => void;
+}) {
+  return (
+    <ScrollView style={styles.screen} contentContainerStyle={styles.content}>
+      <View style={styles.sectionHeader}>
+        <Text style={styles.sectionTitle}>Notifications</Text>
+        <TouchableOpacity style={styles.secondaryButton} onPress={markAllRead}>
+          <Text style={styles.secondaryButtonText}>Mark all read</Text>
+        </TouchableOpacity>
+      </View>
+      {notifications.map((item) => (
+        <TouchableOpacity key={item.id} style={[styles.notificationCard, !item.read && styles.notificationUnread]} onPress={() => markRead(item.id)}>
+          <View style={styles.notificationIcon}>
+            <Ionicons name={item.delivered ? "notifications" : "time-outline"} size={18} color="#0f172a" />
+          </View>
+          <View style={styles.flexOne}>
+            <Text style={styles.notificationTitle}>{item.title}</Text>
+            <Text style={styles.notificationMessage}>{item.message}</Text>
+            <Text style={styles.contextText}>{item.delivered ? formatDateTime(item.createdAt) : `Scheduled ${formatDateTime(item.deliverAt)}`}</Text>
+          </View>
+          {!item.read && <View style={styles.unreadDot} />}
+        </TouchableOpacity>
+      ))}
+      {notifications.length === 0 && <Text style={styles.emptyText}>No notifications yet.</Text>}
+    </ScrollView>
+  );
+}
+
+function TaskDetailsModal({
+  task,
+  lists,
+  close,
+  moveTaskToList,
+  toggleComplete,
+  deleteTask,
+  commentAuthor,
+  setCommentAuthor,
+  commentText,
+  setCommentText,
+  addComment,
+}: {
+  task: Task | null;
+  lists: TaskList[];
+  close: () => void;
+  moveTaskToList: (taskId: string, listId: string) => void;
+  toggleComplete: (taskId: string, completed: boolean) => void;
+  deleteTask: (taskId: string) => void;
+  commentAuthor: string;
+  setCommentAuthor: (value: string) => void;
+  commentText: string;
+  setCommentText: (value: string) => void;
+  addComment: () => void;
+}) {
+  if (!task) return null;
+  const theme = getCardTheme(task);
+
+  return (
+    <Modal visible={!!task} animationType="slide" onRequestClose={close}>
+      <View style={styles.modalShell}>
+        <View style={styles.modalHeader}>
+          <TouchableOpacity style={styles.closeButton} onPress={close}>
+            <Ionicons name="close" size={22} color="#0f172a" />
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.deleteButton} onPress={() => deleteTask(task.id)}>
+            <Ionicons name="trash-outline" size={18} color="#dc2626" />
+            <Text style={styles.deleteButtonText}>Delete</Text>
+          </TouchableOpacity>
+        </View>
+
+        <ScrollView contentContainerStyle={styles.modalContent} keyboardShouldPersistTaps="handled">
+          <View style={[styles.detailHero, { borderColor: theme.border, backgroundColor: theme.bg }]}>
+            <PriorityBadge priority={task.priority} />
+            <Text style={styles.detailTitle}>{task.title}</Text>
+            <Text style={styles.detailDescription}>{task.description || "No description added."}</Text>
+          </View>
+
+          <View style={styles.detailGrid}>
+            <DetailItem icon="person-outline" label="Assigned" value={task.assignedTo || "Unassigned"} />
+            <DetailItem icon="timer-outline" label="Required Time" value={task.requiredTime || "N/A"} />
+            <DetailItem icon="calendar-outline" label="Deadline" value={formatDateTime(task.deadline)} />
+            <DetailItem icon="alarm-outline" label="Reminder" value={formatDateTime(task.reminderAt)} />
+            <DetailItem icon="trending-up-outline" label="Status" value={task.status} />
+            <DetailItem icon="hourglass-outline" label="Remaining" value={getRemainingTime(task)} />
+          </View>
+
+          <View style={styles.switchRow}>
+            <Text style={styles.sectionTitle}>Completion status</Text>
+            <Switch value={task.completed} onValueChange={(value) => toggleComplete(task.id, value)} />
+          </View>
+
+          <Text style={styles.sectionTitle}>Move to list</Text>
+          <View style={styles.moveGrid}>
+            {lists.map((list) => (
+              <TouchableOpacity key={list.id} style={styles.moveButton} onPress={() => moveTaskToList(task.id, list.id)}>
+                <Text style={styles.moveButtonText}>{list.title}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <Text style={styles.sectionTitle}>Comments</Text>
+          <TextInput style={styles.input} value={commentAuthor} onChangeText={setCommentAuthor} placeholder="Commenter name" placeholderTextColor="#94a3b8" />
+          <TextInput
+            style={[styles.input, styles.commentInput]}
+            value={commentText}
+            onChangeText={setCommentText}
+            placeholder="Add a comment"
+            placeholderTextColor="#94a3b8"
+            multiline
+          />
+          <TouchableOpacity style={styles.secondaryButtonWide} onPress={addComment}>
+            <Text style={styles.secondaryButtonText}>Add Comment</Text>
+          </TouchableOpacity>
+          {task.comments.map((comment) => (
+            <View key={comment.id} style={styles.commentCard}>
+              <Text style={styles.commentAuthor}>{comment.author}</Text>
+              <Text style={styles.commentText}>{comment.text}</Text>
+              <Text style={styles.contextText}>{formatDateTime(comment.createdAt)}</Text>
+            </View>
+          ))}
+
+          <Text style={styles.sectionTitle}>Activity Logs</Text>
+          {task.logs.slice().reverse().map((log) => (
+            <View key={log.id} style={styles.logRow}>
+              <View style={styles.logDot} />
+              <View>
+                <Text style={styles.logAction}>{log.action}</Text>
+                <Text style={styles.contextText}>{formatDateTime(log.createdAt)}</Text>
+              </View>
+            </View>
+          ))}
+        </ScrollView>
+      </View>
+    </Modal>
   );
 }
 
 function TaskCard({
   task,
-  moveToDone,
-  addTaskLog,
+  lists,
+  currentListId,
+  onMove,
+  onOpen,
+  onLongPress,
+  dragging,
 }: {
   task: Task;
-  moveToDone?: (cardId: string) => void;
-  addTaskLog?: (cardId: string) => void;
+  lists?: TaskList[];
+  currentListId?: string;
+  onMove?: (taskId: string, listId: string) => void;
+  onOpen: () => void;
+  onLongPress?: () => void;
+  dragging?: boolean;
 }) {
-  const colors = getCardTheme(task);
-
-  const getPriorityColor = (p: string) => {
-    if (!p) return { bg: "#f5f5f5", text: "#666666" };
-    const up = p.toLowerCase();
-    if (up.includes("high")) return { bg: "#ffebee", text: "#d32f2f" };
-    if (up.includes("medium")) return { bg: "#fff3e0", text: "#e65100" };
-    if (up.includes("low")) return { bg: "#e8f5e9", text: "#2e7d32" };
-    return { bg: "#f5f5f5", text: "#666666" };
-  };
-  
-  const priorityTheme = getPriorityColor(task.priority);
-
+  const theme = getCardTheme(task);
+  const moveTargets = lists?.filter((list) => list.id !== currentListId).slice(0, 3) ?? [];
   return (
-    <View style={[styles.card, { backgroundColor: colors.bg, borderColor: colors.border }]}> 
-      <View style={styles.cardHeader}>
-        <View style={[styles.priorityBadge, { backgroundColor: priorityTheme.bg }]}> 
-          <Text style={[styles.priorityBadgeText, { color: priorityTheme.text }]}>{task.priority || "None"}</Text>
+    <View
+      style={[styles.taskCard, { backgroundColor: theme.bg, borderColor: theme.border }, dragging && styles.taskCardDragging]}
+    >
+      <Pressable onPress={onOpen} onLongPress={onLongPress} delayLongPress={180}>
+        <View style={styles.cardTop}>
+          <PriorityBadge priority={task.priority} />
+          <Text style={[styles.remainingText, { color: theme.accent }]}>{getRemainingTime(task)}</Text>
         </View>
-        {task.completed && (
-          <View style={styles.completedBadge}>
-            <Text style={styles.completedBadgeText}>DONE</Text>
-          </View>
-        )}
-      </View>
-
-      <Text style={[styles.cardTitle, { color: colors.title }]}>{task.title}</Text>
-      
-      <View style={styles.cardDetails}>
-        <Text style={[styles.cardText, { color: colors.text }]} numberOfLines={1}>Assignee: {task.assignedTo || "Unassigned"}</Text>
-        <Text style={[styles.cardText, { color: colors.text }]}>Time: {task.requiredTime || "N/A"}</Text>
-        <Text style={[styles.cardText, { color: colors.text }]}>Due: {task.deadline}</Text>
-      </View>
-
-      {task.logs && task.logs.length > 0 && (
-        <View style={styles.logsContainer}>
-          <Text style={[styles.logsTitle, { color: colors.text }]}>Activity</Text>
-          {task.logs.slice(-2).map((log, index) => (
-            <Text key={index} style={[styles.log, { color: colors.text }]} numberOfLines={1}>• {log}</Text>
+        <Text style={styles.taskTitle}>{task.title}</Text>
+        <Text style={styles.taskDescription} numberOfLines={2}>{task.description || "No description"}</Text>
+        <View style={styles.metaRow}>
+          <Ionicons name="person-outline" size={14} color="#64748b" />
+          <Text style={styles.metaText}>{task.assignedTo || "Unassigned"}</Text>
+        </View>
+        <View style={styles.metaRow}>
+          <Ionicons name="calendar-outline" size={14} color="#64748b" />
+          <Text style={styles.metaText}>{formatDateTime(task.deadline)}</Text>
+        </View>
+        <View style={styles.metaRow}>
+          <Ionicons name="timer-outline" size={14} color="#64748b" />
+          <Text style={styles.metaText}>{task.requiredTime || "No estimate"}</Text>
+        </View>
+      </Pressable>
+      {onMove && moveTargets.length > 0 && (
+        <View style={styles.cardMoveRow}>
+          <Text style={styles.cardMoveLabel}>Move</Text>
+          {moveTargets.map((list) => (
+            <TouchableOpacity
+              key={list.id}
+              style={styles.cardMoveButton}
+              onPress={() => onMove(task.id, list.id)}
+            >
+              <Text style={styles.cardMoveText} numberOfLines={1}>{list.title}</Text>
+            </TouchableOpacity>
           ))}
-        </View>
-      )}
-
-      {(moveToDone || addTaskLog) && (
-        <View style={styles.cardActions}>
-          {moveToDone && !task.completed && (
-            <TouchableOpacity style={[styles.actionBtn, styles.completeBtn]} onPress={() => moveToDone(task.id)}>
-              <Text style={styles.completeBtnText}>Complete</Text>
-            </TouchableOpacity>
-          )}
-          {addTaskLog && (
-            <TouchableOpacity style={[styles.actionBtn, styles.noteBtn]} onPress={() => addTaskLog(task.id)}>
-              <Text style={styles.noteBtnText}>Add Note</Text>
-            </TouchableOpacity>
-          )}
         </View>
       )}
     </View>
   );
 }
 
-function getCardTheme(task: Task) {
-  if (task.completed) {
-    return { bg: "#ffffff", border: "#4caf50", title: "#000000", text: "#666666" };
-  }
+function PriorityBadge({ priority }: { priority: Priority }) {
+  const theme = getPriorityTheme(priority);
+  return (
+    <View style={[styles.priorityBadge, { backgroundColor: theme.bg }]}>
+      <Text style={[styles.priorityBadgeText, { color: theme.text }]}>{priority}</Text>
+    </View>
+  );
+}
 
-  const now = new Date();
-  const deadline = new Date(task.deadline);
-  const diffHours = (deadline.getTime() - now.getTime()) / (1000 * 60 * 60);
+function DetailItem({ icon, label, value }: { icon: keyof typeof Ionicons.glyphMap; label: string; value: string }) {
+  return (
+    <View style={styles.detailItem}>
+      <Ionicons name={icon} size={17} color="#475569" />
+      <Text style={styles.detailLabel}>{label}</Text>
+      <Text style={styles.detailValue}>{value}</Text>
+    </View>
+  );
+}
 
-  if (diffHours <= 0) {
-    return { bg: "#ffffff", border: "#f44336", title: "#000000", text: "#666666" };
-  }
-  if (diffHours <= 24) {
-    return { bg: "#ffffff", border: "#ff9800", title: "#000000", text: "#666666" };
-  }
-  
-  return { bg: "#ffffff", border: "#eaeaea", title: "#000000", text: "#666666" };
+function FormInput({
+  label,
+  value,
+  onChangeText,
+  placeholder,
+  multiline,
+}: {
+  label: string;
+  value: string;
+  onChangeText: (value: string) => void;
+  placeholder: string;
+  multiline?: boolean;
+}) {
+  return (
+    <View style={styles.inputGroup}>
+      <Text style={styles.inputLabel}>{label}</Text>
+      <TextInput
+        style={[styles.input, multiline && styles.multilineInput]}
+        value={value}
+        onChangeText={onChangeText}
+        placeholder={placeholder}
+        placeholderTextColor="#94a3b8"
+        multiline={multiline}
+      />
+    </View>
+  );
+}
+
+function QuickAction({ icon, label, onPress }: { icon: keyof typeof Ionicons.glyphMap; label: string; onPress: () => void }) {
+  return (
+    <TouchableOpacity style={styles.quickAction} onPress={onPress}>
+      <Ionicons name={icon} size={20} color="#0f172a" />
+      <Text style={styles.quickActionText}>{label}</Text>
+      <Ionicons name="chevron-forward" size={18} color="#64748b" />
+    </TouchableOpacity>
+  );
+}
+
+function IconButton({ icon, label, onPress }: { icon: keyof typeof Ionicons.glyphMap; label?: string; onPress: () => void }) {
+  return (
+    <TouchableOpacity style={styles.iconButton} onPress={onPress}>
+      <Ionicons name={icon} size={20} color="#0f172a" />
+      {!!label && (
+        <View style={styles.iconBadge}>
+          <Text style={styles.iconBadgeText}>{label}</Text>
+        </View>
+      )}
+    </TouchableOpacity>
+  );
 }
 
 const styles = StyleSheet.create({
-  container: {
+  shell: {
     flex: 1,
-    backgroundColor: "#ffffff",
-    paddingTop: Platform.OS === 'android' ? 40 : 48,
+    backgroundColor: "#f8fafc",
+  },
+  app: {
+    flex: 1,
+    paddingTop: Platform.OS === "android" ? 38 : 54,
+    backgroundColor: "#f8fafc",
   },
   header: {
     paddingHorizontal: 20,
-    paddingBottom: 24,
-    backgroundColor: "#ffffff",
-    borderBottomWidth: 1,
-    borderBottomColor: "#eaeaea",
-  },
-  headerTop: {
+    paddingBottom: 16,
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
+    justifyContent: "space-between",
+  },
+  kicker: {
+    color: "#0f766e",
+    fontSize: 12,
+    fontWeight: "800",
+    textTransform: "uppercase",
   },
   title: {
+    color: "#0f172a",
     fontSize: 24,
-    fontWeight: "700",
-    color: "#000000",
-    letterSpacing: -0.5,
-  },
-  subtitle: {
+    fontWeight: "800",
     marginTop: 2,
-    color: "#666666",
-    fontSize: 14,
-    fontWeight: "400",
   },
-  testButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: "#eaeaea",
-  },
-  testButtonText: {
-    color: "#000000",
-    fontWeight: "500",
-    fontSize: 12,
-  },
-  heroRow: {
+  headerActions: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    marginTop: 24,
+    gap: 10,
   },
-  heroCard: {
-    flex: 1,
-    padding: 12,
-    marginHorizontal: 4,
-    borderWidth: 1,
-    borderColor: "#eaeaea",
+  iconButton: {
+    width: 42,
+    height: 42,
     borderRadius: 8,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  heroLabel: {
-    fontSize: 11,
-    color: "#666666",
-    fontWeight: "500",
-    marginTop: 4,
-  },
-  heroValue: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#000000",
-  },
-  heroSubtitle: {
-    marginTop: 4,
-    color: "#d32f2f",
-    fontSize: 10,
-    fontWeight: "600",
-  },
-  tabContainer: {
-    paddingHorizontal: 20,
-    marginTop: 16,
-  },
-  tabRow: {
-    flexDirection: "row",
-    borderBottomWidth: 1,
-    borderBottomColor: "#eaeaea",
-  },
-  tabButton: {
-    flex: 1,
-    paddingVertical: 12,
+    backgroundColor: "#ffffff",
     alignItems: "center",
-    borderBottomWidth: 2,
-    borderBottomColor: "transparent",
-  },
-  tabButtonActive: {
-    borderBottomColor: "#000000",
-  },
-  tabText: {
-    color: "#888888",
-    fontWeight: "500",
-    fontSize: 14,
-  },
-  tabTextActive: {
-    color: "#000000",
-    fontWeight: "600",
-    fontSize: 14,
-  },
-  selectorRow: {
-    marginTop: 16,
-    paddingBottom: 16,
-  },
-  selectorScroll: {
-    paddingHorizontal: 20,
-  },
-  selectorButton: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#eaeaea",
-    marginRight: 10,
-  },
-  selectorButtonActive: {
-    backgroundColor: "#000000",
-    borderColor: "#000000",
-  },
-  selectorText: {
-    color: "#666666",
-    fontWeight: "400",
-    fontSize: 13,
-  },
-  selectorTextActive: {
-    color: "#ffffff",
-    fontWeight: "500",
-    fontSize: 13,
-  },
-  addInlineRow: {
-    flexDirection: "row",
-    paddingHorizontal: 20,
-    marginBottom: 16,
-  },
-  addInlineInput: {
-    flex: 1,
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#eaeaea",
-    borderRadius: 8,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginRight: 10,
-    color: "#000000",
-    fontSize: 14,
-  },
-  addInlineBtn: {
-    backgroundColor: "#000000",
     justifyContent: "center",
-    paddingHorizontal: 16,
-    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
   },
-  addInlineBtnText: {
+  iconBadge: {
+    position: "absolute",
+    right: -4,
+    top: -4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: "#ef4444",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 4,
+  },
+  iconBadgeText: {
     color: "#ffffff",
-    fontWeight: "500",
+    fontSize: 10,
+    fontWeight: "800",
+  },
+  navWrap: {
+    paddingBottom: 12,
+  },
+  nav: {
+    paddingHorizontal: 20,
+    gap: 8,
+  },
+  navButton: {
+    height: 38,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  navButtonActive: {
+    backgroundColor: "#0f172a",
+    borderColor: "#0f172a",
+  },
+  navText: {
+    color: "#475569",
     fontSize: 13,
+    fontWeight: "700",
   },
-  boardView: {
+  navTextActive: {
+    color: "#ffffff",
+  },
+  screen: {
     flex: 1,
   },
-  board: {
-    flex: 1,
+  content: {
+    padding: 20,
+    paddingBottom: 120,
+  },
+  dashboardContent: {
+    padding: 20,
+    paddingBottom: 120,
+    gap: 18,
+  },
+  statGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 12,
+  },
+  statCard: {
+    width: "48%",
+    minHeight: 126,
+    borderRadius: 8,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    padding: 16,
+    justifyContent: "space-between",
+  },
+  statValue: {
+    color: "#0f172a",
+    fontSize: 30,
+    fontWeight: "900",
+  },
+  statLabel: {
+    color: "#64748b",
+    fontSize: 13,
+    fontWeight: "700",
+  },
+  quickActions: {
+    gap: 10,
+  },
+  quickAction: {
+    minHeight: 58,
+    borderRadius: 8,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
     paddingHorizontal: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  quickActionText: {
+    flex: 1,
+    color: "#0f172a",
+    fontSize: 15,
+    fontWeight: "800",
+  },
+  inlineForm: {
+    flexDirection: "row",
+    gap: 10,
+    paddingHorizontal: 20,
+    marginBottom: 14,
+  },
+  inlineInput: {
+    flex: 1,
+    height: 46,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 14,
+    color: "#0f172a",
+    fontSize: 14,
+  },
+  primarySmallButton: {
+    width: 48,
+    height: 46,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#0f172a",
+  },
+  boardCard: {
+    minHeight: 78,
+    borderRadius: 8,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    padding: 14,
+    marginBottom: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  boardCardMain: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    flex: 1,
+  },
+  boardIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#f1f5f9",
+  },
+  boardIconActive: {
+    backgroundColor: "#0f766e",
+  },
+  boardTitle: {
+    color: "#0f172a",
+    fontSize: 16,
+    fontWeight: "800",
+  },
+  boardMeta: {
+    color: "#64748b",
+    marginTop: 3,
+    fontWeight: "600",
+  },
+  dangerIconButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#fef2f2",
+  },
+  flexOne: {
+    flex: 1,
+  },
+  boardScreen: {
+    flex: 1,
+  },
+  boardScroller: {
+    flex: 1,
   },
   boardContent: {
-    paddingVertical: 12,
-    paddingRight: 32,
+    paddingHorizontal: 20,
+    paddingBottom: 120,
+    gap: 14,
   },
-  column: {
-    width: 280,
-    backgroundColor: "#fafafa",
-    marginRight: 16,
-    padding: 12,
+  dropRail: {
+    marginHorizontal: 20,
+    marginBottom: 14,
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: "#eaeaea",
+    borderColor: "#f97316",
+    backgroundColor: "#fff7ed",
+    padding: 10,
   },
-  dropHighlight: {
-    borderColor: "#000000",
-    backgroundColor: "#f5f5f5",
+  dropRailTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 7,
+    marginBottom: 8,
+  },
+  dropRailTitle: {
+    flex: 1,
+    color: "#0f172a",
+    fontWeight: "900",
+    fontSize: 13,
+  },
+  dropRailTargets: {
+    gap: 8,
+    alignItems: "center",
+  },
+  dropTargetButton: {
+    borderRadius: 8,
+    backgroundColor: "#0f172a",
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  dropTargetText: {
+    color: "#ffffff",
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  dropCancelButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#fed7aa",
+  },
+  column: {
+    width: 292,
+    borderRadius: 8,
+    backgroundColor: "#eef2f7",
+    borderWidth: 1,
+    borderColor: "#dbe3ef",
+    padding: 12,
+    alignSelf: "flex-start",
+    minHeight: 360,
   },
   columnHeader: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 12,
+    justifyContent: "space-between",
+    marginBottom: 10,
   },
   columnTitle: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#000000",
+    color: "#0f172a",
+    fontSize: 13,
+    fontWeight: "900",
     textTransform: "uppercase",
-    letterSpacing: 0.5,
   },
-  listCountBadge: {
-    backgroundColor: "#eaeaea",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 12,
-  },
-  listCountText: {
-    fontSize: 11,
-    fontWeight: "500",
-    color: "#333333",
-  },
-  columnBody: {
-    minHeight: 200,
-  },
-  cardContainer: {
-    marginBottom: 12,
-  },
-  card: {
-    padding: 16,
+  countBadge: {
+    minWidth: 26,
+    textAlign: "center",
     borderRadius: 8,
-    borderWidth: 1,
-    backgroundColor: '#ffffff',
-  },
-  cardHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    marginBottom: 12,
-  },
-  priorityBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 4,
-  },
-  priorityBadgeText: {
-    fontWeight: "600",
-    fontSize: 10,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  completedBadge: {
-    backgroundColor: "#e8f5e9",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 4,
-  },
-  completedBadgeText: {
-    color: "#2e7d32",
-    fontWeight: "600",
-    fontSize: 10,
-  },
-  cardTitle: {
-    fontSize: 15,
-    fontWeight: "600",
-    marginBottom: 12,
-    lineHeight: 20,
-    color: "#000000",
-  },
-  cardDetails: {
-    gap: 4,
-  },
-  cardText: {
-    fontSize: 12,
-    fontWeight: "400",
-    color: "#666666",
-  },
-  logsContainer: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: "#eaeaea",
-  },
-  logsTitle: {
-    fontSize: 11,
-    fontWeight: "600",
-    marginBottom: 4,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-    color: "#333333",
-  },
-  log: {
-    fontSize: 11,
-    marginTop: 2,
-    color: "#666666",
-  },
-  cardActions: {
-    marginTop: 16,
-    flexDirection: "row",
-    gap: 8,
-  },
-  actionBtn: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 6,
-    alignItems: "center",
-    borderWidth: 1,
-  },
-  completeBtn: {
-    backgroundColor: "#000000",
-    borderColor: "#000000",
-  },
-  completeBtnText: {
-    color: "#ffffff",
-    fontWeight: "500",
-    fontSize: 12,
-  },
-  noteBtn: {
-    backgroundColor: "transparent",
-    borderColor: "#eaeaea",
-  },
-  noteBtnText: {
-    color: "#000000",
-    fontWeight: "500",
-    fontSize: 12,
-  },
-  dragPreview: {
-    position: "absolute",
-    width: 280,
-    padding: 16,
+    overflow: "hidden",
     backgroundColor: "#ffffff",
+    color: "#475569",
+    fontWeight: "900",
+    paddingVertical: 3,
+  },
+  emptyColumnText: {
+    color: "#64748b",
+    fontWeight: "700",
+    paddingVertical: 20,
+    textAlign: "center",
+  },
+  taskCard: {
     borderRadius: 8,
     borderWidth: 1,
-    borderColor: "#000000",
-    shadowColor: "#000000",
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
-    shadowOffset: { width: 0, height: 4 },
-    zIndex: 100,
+    padding: 14,
+    marginBottom: 12,
+  },
+  taskCardDragging: {
+    opacity: 0.75,
     transform: [{ scale: 1.02 }],
   },
-  previewTitle: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#000000",
-    marginBottom: 4,
-  },
-  previewSubtitle: {
-    color: "#666666",
-    fontSize: 12,
-  },
-  formContainer: {
-    flex: 1,
-    padding: 20,
-  },
-  formContent: {
-    paddingBottom: 100,
-  },
-  formSectionTitle: {
-    fontSize: 18,
-    fontWeight: "600",
-    color: "#000000",
-    marginBottom: 20,
-  },
-  inputGroup: {
-    marginBottom: 20,
-  },
-  inputLabel: {
-    fontSize: 12,
-    fontWeight: "500",
-    color: "#666666",
-    marginBottom: 8,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  input: {
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#eaeaea",
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 8,
-    color: "#000000",
-    fontSize: 14,
-  },
-  deadlineRow: {
+  cardTop: {
     flexDirection: "row",
-    gap: 12,
-    marginBottom: 12,
-  },
-  deadlineInput: {
-    flex: 1,
-  },
-  presetRow: {
-    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
     gap: 8,
   },
-  presetBtn: {
-    flex: 1,
-    backgroundColor: "#fafafa",
-    borderWidth: 1,
-    borderColor: "#eaeaea",
-    paddingVertical: 8,
+  priorityBadge: {
+    alignSelf: "flex-start",
     borderRadius: 6,
-    alignItems: "center",
+    paddingHorizontal: 8,
+    paddingVertical: 4,
   },
-  presetBtnText: {
-    color: "#333333",
+  priorityBadgeText: {
     fontSize: 11,
-    fontWeight: "500",
+    fontWeight: "900",
   },
-  prioritySelector: {
-    flexDirection: "row",
-    gap: 12,
+  remainingText: {
+    fontSize: 11,
+    fontWeight: "900",
   },
-  priorityBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#eaeaea",
-    backgroundColor: "#ffffff",
-    alignItems: "center",
+  taskTitle: {
+    color: "#0f172a",
+    fontSize: 16,
+    fontWeight: "900",
+    marginTop: 12,
   },
-  priorityBtnActive: {
-    backgroundColor: "#fafafa",
-    borderColor: "#000000",
-  },
-  priorityBtnText: {
-    color: "#666666",
-    fontWeight: "500",
+  taskDescription: {
+    color: "#475569",
     fontSize: 13,
+    lineHeight: 18,
+    marginTop: 5,
+    marginBottom: 10,
   },
-  priorityBtnTextActive: {
-    color: "#000000",
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 4,
+  },
+  metaText: {
+    color: "#475569",
+    fontSize: 12,
     fontWeight: "600",
   },
-  submitBtn: {
-    backgroundColor: "#000000",
-    paddingVertical: 14,
+  cardMoveRow: {
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: "rgba(15, 23, 42, 0.1)",
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+    gap: 6,
+  },
+  cardMoveLabel: {
+    color: "#64748b",
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
+  cardMoveButton: {
+    maxWidth: 92,
+    borderRadius: 7,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+  },
+  cardMoveText: {
+    color: "#0f172a",
+    fontSize: 11,
+    fontWeight: "900",
+  },
+  formContent: {
+    padding: 20,
+    paddingBottom: 120,
+  },
+  inputGroup: {
+    marginBottom: 16,
+  },
+  inputLabel: {
+    color: "#334155",
+    fontSize: 12,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    marginBottom: 7,
+  },
+  input: {
+    flex: 1,
+    minHeight: 46,
     borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    color: "#0f172a",
+    fontSize: 14,
+  },
+  multilineInput: {
+    minHeight: 92,
+    textAlignVertical: "top",
+  },
+  doubleRow: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  priorityRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  priorityButton: {
+    flexGrow: 1,
+    minWidth: "23%",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    backgroundColor: "#ffffff",
+    paddingVertical: 11,
+    alignItems: "center",
+  },
+  priorityButtonText: {
+    color: "#475569",
+    fontWeight: "900",
+    fontSize: 12,
+  },
+  submitButton: {
+    height: 50,
+    borderRadius: 8,
+    backgroundColor: "#0f172a",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 8,
+  },
+  submitButtonText: {
+    color: "#ffffff",
+    fontWeight: "900",
+    fontSize: 15,
+  },
+  searchBox: {
+    height: 48,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginBottom: 16,
+  },
+  searchInput: {
+    flex: 1,
+    color: "#0f172a",
+    fontSize: 14,
+  },
+  listTaskWrap: {
+    marginBottom: 10,
+  },
+  contextText: {
+    color: "#64748b",
+    fontSize: 12,
+    fontWeight: "700",
+    marginBottom: 6,
+  },
+  emptyText: {
+    color: "#64748b",
+    textAlign: "center",
+    marginTop: 32,
+    fontWeight: "700",
+  },
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  sectionTitle: {
+    color: "#0f172a",
+    fontSize: 16,
+    fontWeight: "900",
+    marginTop: 18,
+    marginBottom: 10,
+  },
+  secondaryButton: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  secondaryButtonWide: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
     alignItems: "center",
     marginTop: 10,
   },
-  submitBtnText: {
-    color: "#ffffff",
+  secondaryButtonText: {
+    color: "#0f172a",
+    fontWeight: "900",
+  },
+  notificationCard: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#ffffff",
+    padding: 14,
+    marginBottom: 10,
+    flexDirection: "row",
+    gap: 12,
+    alignItems: "center",
+  },
+  notificationUnread: {
+    borderColor: "#38bdf8",
+    backgroundColor: "#f0f9ff",
+  },
+  notificationIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 8,
+    backgroundColor: "#e2e8f0",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  notificationTitle: {
+    color: "#0f172a",
+    fontSize: 15,
+    fontWeight: "900",
+  },
+  notificationMessage: {
+    color: "#475569",
+    marginTop: 3,
+    marginBottom: 5,
     fontWeight: "600",
-    fontSize: 14,
   },
-  listView: {
+  unreadDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#0ea5e9",
+  },
+  modalShell: {
     flex: 1,
+    backgroundColor: "#f8fafc",
+    paddingTop: Platform.OS === "android" ? 34 : 54,
+  },
+  modalHeader: {
     paddingHorizontal: 20,
-    paddingTop: 16,
+    paddingBottom: 12,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
   },
-  listContent: {
-    paddingBottom: 100,
+  closeButton: {
+    width: 42,
+    height: 42,
+    borderRadius: 8,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    alignItems: "center",
+    justifyContent: "center",
   },
-  listCardWrapper: {
-    marginBottom: 16,
-  }
+  deleteButton: {
+    height: 42,
+    borderRadius: 8,
+    backgroundColor: "#fef2f2",
+    paddingHorizontal: 12,
+    alignItems: "center",
+    flexDirection: "row",
+    gap: 6,
+  },
+  deleteButtonText: {
+    color: "#dc2626",
+    fontWeight: "900",
+  },
+  modalContent: {
+    padding: 20,
+    paddingBottom: 120,
+  },
+  detailHero: {
+    borderRadius: 8,
+    borderWidth: 1,
+    padding: 16,
+  },
+  detailTitle: {
+    color: "#0f172a",
+    fontSize: 24,
+    fontWeight: "900",
+    marginTop: 12,
+  },
+  detailDescription: {
+    color: "#475569",
+    fontSize: 14,
+    lineHeight: 21,
+    marginTop: 8,
+    fontWeight: "600",
+  },
+  detailGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+    marginTop: 16,
+  },
+  detailItem: {
+    width: "48%",
+    minHeight: 94,
+    borderRadius: 8,
+    backgroundColor: "#ffffff",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    padding: 12,
+  },
+  detailLabel: {
+    color: "#64748b",
+    fontSize: 11,
+    fontWeight: "900",
+    textTransform: "uppercase",
+    marginTop: 8,
+  },
+  detailValue: {
+    color: "#0f172a",
+    fontSize: 13,
+    fontWeight: "800",
+    marginTop: 4,
+  },
+  switchRow: {
+    minHeight: 54,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  moveGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  moveButton: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#cbd5e1",
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  moveButtonText: {
+    color: "#0f172a",
+    fontWeight: "900",
+  },
+  commentInput: {
+    marginTop: 10,
+    minHeight: 84,
+    textAlignVertical: "top",
+  },
+  commentCard: {
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#ffffff",
+    padding: 12,
+    marginTop: 10,
+  },
+  commentAuthor: {
+    color: "#0f172a",
+    fontWeight: "900",
+    marginBottom: 4,
+  },
+  commentText: {
+    color: "#475569",
+    fontWeight: "600",
+    lineHeight: 20,
+    marginBottom: 8,
+  },
+  logRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginBottom: 12,
+  },
+  logDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#0f766e",
+    marginTop: 4,
+  },
+  logAction: {
+    color: "#0f172a",
+    fontWeight: "900",
+  },
 });
