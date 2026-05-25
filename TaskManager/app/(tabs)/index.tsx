@@ -1,6 +1,8 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import Constants, { ExecutionEnvironment } from "expo-constants";
 import { Ionicons } from "@expo/vector-icons";
 import DraggableFlatList, { RenderItemParams } from "react-native-draggable-flatlist";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
@@ -87,7 +89,15 @@ type NotificationItem = {
 
 type NotificationsModule = typeof import("expo-notifications");
 
+// অ্যাপের সব বোর্ড, টাস্ক ও নোটিফিকেশন এই key দিয়ে ফোনের লোকাল স্টোরেজে রাখা হয়।
 const STORAGE_KEY = "taskflow-mobile-state-v3";
+
+// Expo Go-তে native notification API সীমিত, তাই এখানে আগেই বুঝে নিই fallback লাগবে কিনা।
+const isExpoGo =
+  Constants.executionEnvironment === ExecutionEnvironment.StoreClient ||
+  Constants.appOwnership === "expo";
+
+// নতুন বোর্ড বানালে Trello-এর মতো এই চারটি default column/list তৈরি হয়।
 const DEFAULT_LISTS = [
   { id: "todo", title: "To Do" },
   { id: "in-progress", title: "In Progress" },
@@ -95,18 +105,24 @@ const DEFAULT_LISTS = [
   { id: "completed", title: "Completed" },
 ];
 
+// বর্তমান সময় ISO string হিসেবে দেয়, যাতে storage ও sorting consistent থাকে।
 const nowIso = () => new Date().toISOString();
+
+// প্রতিটি board/list/task/comment/log-এর জন্য unique id বানায়।
 const makeId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
+// কোনো task action ঘটলে activity log object বানায়।
 const createLog = (action: string): ActivityLog => ({
   id: makeId("log"),
   action,
   createdAt: nowIso(),
 });
 
+// default list template থেকে fresh list array বানায়, যাতে প্রতিটি board আলাদা data পায়।
 const createDefaultLists = (): TaskList[] =>
   DEFAULT_LISTS.map((list) => ({ ...list, cards: [] }));
 
+// app প্রথমবার open হলে দেখানোর জন্য starter board বানায়।
 const createInitialBoards = (): Board[] => [
   {
     id: "board-1",
@@ -116,6 +132,7 @@ const createInitialBoards = (): Board[] => [
   },
 ];
 
+// ISO/date string কে user-friendly date/time text বানায়।
 const formatDateTime = (value?: string) => {
   if (!value) return "Not set";
   const date = new Date(value);
@@ -129,17 +146,20 @@ const formatDateTime = (value?: string) => {
   });
 };
 
+// Date object থেকে YYYY-MM-DD input format বানায়।
 const toInputDate = (value: Date) => {
   const month = String(value.getMonth() + 1).padStart(2, "0");
   const day = String(value.getDate()).padStart(2, "0");
   return `${value.getFullYear()}-${month}-${day}`;
 };
 
+// date input ও time input মিলিয়ে valid Date object বানায়।
 const parseDateTime = (date: string, time: string) => {
   const parsed = new Date(`${date.trim()}T${time.trim()}:00`);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 };
 
+// deadline ও completion দেখে task-এর urgency state বের করে।
 const getTaskState = (task: Task) => {
   if (task.completed) return "completed";
   const deadline = new Date(task.deadline).getTime();
@@ -151,6 +171,7 @@ const getTaskState = (task: Task) => {
   return "normal";
 };
 
+// deadline পর্যন্ত কত সময় বাকি আছে বা কত overdue হয়েছে, সেই label বানায়।
 const getRemainingTime = (task: Task) => {
   if (task.completed) return "Completed";
   const deadline = new Date(task.deadline).getTime();
@@ -163,6 +184,7 @@ const getRemainingTime = (task: Task) => {
   return diff < 0 ? `${label} overdue` : `${label} left`;
 };
 
+// priority badge-এর color theme ঠিক করে।
 const getPriorityTheme = (priority: Priority) => {
   switch (priority) {
     case "Low":
@@ -176,6 +198,7 @@ const getPriorityTheme = (priority: Priority) => {
   }
 };
 
+// task card-এর background/border color deadline ও completed status অনুযায়ী ঠিক করে।
 const getCardTheme = (task: Task) => {
   switch (getTaskState(task)) {
     case "completed":
@@ -191,6 +214,7 @@ const getCardTheme = (task: Task) => {
   }
 };
 
+// একটি list-এর task গুলোর urgency দেখে পুরো list/column-এর color tint ঠিক করে।
 const getListTheme = (list: TaskList) => {
   if (list.cards.length > 0 && list.cards.every((task) => task.completed)) {
     return { bg: "#ecfdf5", border: "#bbf7d0", header: "#166534" };
@@ -207,6 +231,7 @@ const getListTheme = (list: TaskList) => {
   return { bg: "#eef2f7", border: "#dbe3ef", header: "#0f172a" };
 };
 
+// মূল app component: সব state, storage, notification, board/task action এখান থেকে control হয়।
 export default function TaskFlowApp() {
   const [boards, setBoards] = useState<Board[]>(createInitialBoards());
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -220,8 +245,10 @@ export default function TaskFlowApp() {
   const [hydrated, setHydrated] = useState(false);
   const notificationsRef = useRef<NotificationsModule | null>(null);
 
+  // বর্তমানে কোন board খোলা আছে, সেটা activeBoardId দিয়ে খুঁজে বের করি।
   const activeBoard = boards.find((board) => board.id === activeBoardId) ?? boards[0];
 
+  // সব board-এর সব task এক জায়গায় flatten করি, dashboard/list view-এর জন্য।
   const allTasks = useMemo(
     () =>
       boards.flatMap((board) =>
@@ -232,6 +259,7 @@ export default function TaskFlowApp() {
     [boards]
   );
 
+  // dashboard-এর count/statistics এখানে calculate হয়।
   const dashboardStats = useMemo(() => {
     const completed = allTasks.filter((task) => task.completed).length;
     const overdue = allTasks.filter((task) => getTaskState(task) === "overdue").length;
@@ -244,6 +272,7 @@ export default function TaskFlowApp() {
     };
   }, [allTasks, boards.length, notifications]);
 
+  // boards ও notifications AsyncStorage-এ save করে, যাতে app restart করলেও data থাকে।
   const persistState = useCallback(async (nextBoards: Board[], nextNotifications: NotificationItem[]) => {
     await AsyncStorage.setItem(
       STORAGE_KEY,
@@ -251,6 +280,7 @@ export default function TaskFlowApp() {
     );
   }, [activeBoardId]);
 
+  // app load হওয়ার সময় AsyncStorage থেকে আগের saved data read করে state-এ বসায়।
   useEffect(() => {
     const loadState = async () => {
       try {
@@ -283,10 +313,12 @@ export default function TaskFlowApp() {
     loadState();
   }, []);
 
+  // boards বা notifications বদলালেই latest data local storage-এ save হয়।
   useEffect(() => {
     if (hydrated) persistState(boards, notifications);
   }, [boards, notifications, hydrated, persistState]);
 
+  // reminder time পার হলে in-app notification delivered হিসেবে mark করে।
   const markDueNotificationsDelivered = useCallback(() => {
     setNotifications((previous) =>
       previous.map((item) => {
@@ -296,14 +328,16 @@ export default function TaskFlowApp() {
     );
   }, []);
 
+  // প্রতি ৩০ সেকেন্ডে pending reminder check করে notification center update করে।
   useEffect(() => {
     markDueNotificationsDelivered();
     const timer = setInterval(markDueNotificationsDelivered, 30000);
     return () => clearInterval(timer);
   }, [markDueNotificationsDelivered]);
 
+  // native notification permission/channel setup করে; Expo Go/Web হলে safe fallback দেয়।
   const ensureNotifications = useCallback(async () => {
-    if (Platform.OS === "web") return null;
+    if (Platform.OS === "web" || isExpoGo) return null;
 
     const module = await import("expo-notifications");
     notificationsRef.current = module;
@@ -336,6 +370,7 @@ export default function TaskFlowApp() {
     return module;
   }, []);
 
+  // device notification আসলে সেটাকে app-এর notification center-এ unread হিসেবে update করে।
   useEffect(() => {
     let subscription: { remove: () => void } | undefined;
     ensureNotifications()
@@ -357,6 +392,7 @@ export default function TaskFlowApp() {
     return () => subscription?.remove();
   }, [ensureNotifications]);
 
+  // task-এর reminderAt অনুযায়ী local notification schedule করে।
   const scheduleReminder = async (task: Task) => {
     const reminderDate = new Date(task.reminderAt);
     if (Number.isNaN(reminderDate.getTime()) || reminderDate <= new Date()) return undefined;
@@ -384,6 +420,7 @@ export default function TaskFlowApp() {
     }
   };
 
+  // notification center-এ একটি reminder notification item যোগ করে।
   const addNotificationForTask = (task: Task, delivered = false) => {
     const item: NotificationItem = {
       id: makeId("notification"),
@@ -398,6 +435,7 @@ export default function TaskFlowApp() {
     setNotifications((previous) => [item, ...previous]);
   };
 
+  // যেকোনো board/list-এর ভিতরে থাকা নির্দিষ্ট task update করার reusable helper।
   const updateTask = (taskId: string, updater: (task: Task) => Task) => {
     setBoards((previous) =>
       previous.map((board) => ({
@@ -410,6 +448,7 @@ export default function TaskFlowApp() {
     );
   };
 
+  // user input থেকে নতুন board তৈরি করে active board বানায়।
   const addBoard = () => {
     const title = newBoardName.trim();
     if (!title) {
@@ -429,6 +468,7 @@ export default function TaskFlowApp() {
     setScreen("board");
   };
 
+  // board delete করার আগে confirmation নেয় এবং কমপক্ষে একটি board রাখে।
   const deleteBoard = (boardId: string) => {
     if (boards.length === 1) {
       Alert.alert("Keep one board", "TaskFlow needs at least one board.");
@@ -451,6 +491,7 @@ export default function TaskFlowApp() {
     ]);
   };
 
+  // active board-এ নতুন custom list/column যোগ করে।
   const addList = () => {
     const title = newListName.trim();
     if (!title || !activeBoard) {
@@ -468,6 +509,7 @@ export default function TaskFlowApp() {
     setNewListName("");
   };
 
+  // Add Task form-এর data দিয়ে নতুন task বানায়, first list-এ রাখে, reminder schedule করে।
   const addTask = async (input: NewTaskInput) => {
     if (!activeBoard) return;
     const createdAt = nowIso();
@@ -507,6 +549,7 @@ export default function TaskFlowApp() {
     setScreen("board");
   };
 
+  // task delete করে এবং তার scheduled notification থাকলে সেটাও cancel করে।
   const deleteTask = (taskId: string) => {
     Alert.alert("Delete task?", "This removes the task, comments, logs, and reminder from this phone.", [
       { text: "Cancel", style: "cancel" },
@@ -534,6 +577,7 @@ export default function TaskFlowApp() {
     ]);
   };
 
+  // drag-and-drop শেষে একই list-এর card order save করে।
   const reorderList = (listId: string, cards: Task[]) => {
     if (!activeBoard) return;
     setBoards((previous) =>
@@ -545,6 +589,7 @@ export default function TaskFlowApp() {
     );
   };
 
+  // একটি task এক list থেকে অন্য list-এ move করে; Completed list-এ গেলে task completed হয়।
   const moveTaskToList = (taskId: string, targetListId: string) => {
     let movedTask: Task | undefined;
     const targetList = activeBoard?.lists.find((list) => list.id === targetListId);
@@ -584,6 +629,7 @@ export default function TaskFlowApp() {
     );
   };
 
+  // task detail screen-এর switch দিয়ে completed/incomplete status toggle করে।
   const toggleComplete = (taskId: string, completed: boolean) => {
     const completedList = activeBoard?.lists.find((list) => list.title.toLowerCase() === "completed");
     if (completed && completedList) {
@@ -609,6 +655,7 @@ export default function TaskFlowApp() {
     );
   };
 
+  // selected task-এ নতুন comment যোগ করে এবং activity log রাখে।
   const addComment = () => {
     if (!selectedTask || !commentText.trim()) return;
     const comment: Comment = {
@@ -629,10 +676,25 @@ export default function TaskFlowApp() {
     setCommentAuthor("");
   };
 
+  // bell/radio button দিয়ে notification system test করে; Expo Go/Web হলে in-app fallback দেখায়।
   const sendTestNotification = async () => {
     const module = await ensureNotifications();
     if (!module) {
-      Alert.alert("Web preview", "Device notifications are available on iOS and Android builds.");
+      setNotifications((previous) => [
+        {
+          id: makeId("notification"),
+          title: "TaskFlow test",
+          message: isExpoGo
+            ? "Expo Go uses the in-app notification center. Build a development app for device alerts."
+            : "Notifications are available in iOS and Android builds.",
+          createdAt: nowIso(),
+          deliverAt: nowIso(),
+          read: false,
+          delivered: true,
+        },
+        ...previous,
+      ]);
+      setScreen("notifications");
       return;
     }
 
@@ -658,91 +720,95 @@ export default function TaskFlowApp() {
     }
   };
 
+  // modal খোলা থাকলে latest task data দেখাই, যেন move/comment/toggle করার পর detail stale না হয়।
   const selectedTaskLive = selectedTask ? allTasks.find((task) => task.id === selectedTask.id) ?? selectedTask : null;
 
   return (
-    <KeyboardAvoidingView style={styles.shell} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <View style={styles.app}>
-        <Header
-          activeBoardTitle={activeBoard?.title ?? "TaskFlow"}
-          unread={dashboardStats.unread}
-          onNotify={() => setScreen("notifications")}
-          onTestNotification={sendTestNotification}
-        />
-
-        <NavBar screen={screen} setScreen={setScreen} />
-
-        {screen === "dashboard" && (
-          <Dashboard stats={dashboardStats} setScreen={setScreen} />
-        )}
-
-        {screen === "boards" && (
-          <BoardsScreen
-            boards={boards}
-            activeBoardId={activeBoard?.id}
-            newBoardName={newBoardName}
-            setNewBoardName={setNewBoardName}
-            addBoard={addBoard}
-            openBoard={(id) => {
-              setActiveBoardId(id);
-              setScreen("board");
-            }}
-            deleteBoard={deleteBoard}
+    <GestureHandlerRootView style={styles.shell}>
+      <KeyboardAvoidingView style={styles.shell} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        <View style={styles.app}>
+          <Header
+            activeBoardTitle={activeBoard?.title ?? "TaskFlow"}
+            unread={dashboardStats.unread}
+            onNotify={() => setScreen("notifications")}
+            onTestNotification={sendTestNotification}
           />
-        )}
 
-        {screen === "board" && activeBoard && (
-          <BoardScreen
-            board={activeBoard}
-            newListName={newListName}
-            setNewListName={setNewListName}
-            addList={addList}
-            reorderList={reorderList}
+          <NavBar screen={screen} setScreen={setScreen} />
+
+          {screen === "dashboard" && (
+            <Dashboard stats={dashboardStats} setScreen={setScreen} />
+          )}
+
+          {screen === "boards" && (
+            <BoardsScreen
+              boards={boards}
+              activeBoardId={activeBoard?.id}
+              newBoardName={newBoardName}
+              setNewBoardName={setNewBoardName}
+              addBoard={addBoard}
+              openBoard={(id) => {
+                setActiveBoardId(id);
+                setScreen("board");
+              }}
+              deleteBoard={deleteBoard}
+            />
+          )}
+
+          {screen === "board" && activeBoard && (
+            <BoardScreen
+              board={activeBoard}
+              newListName={newListName}
+              setNewListName={setNewListName}
+              addList={addList}
+              reorderList={reorderList}
+              moveTaskToList={moveTaskToList}
+              openTask={setSelectedTask}
+            />
+          )}
+
+          {screen === "add" && (
+            <AddTaskScreen addTask={addTask} />
+          )}
+
+          {screen === "list" && (
+            <ListViewScreen boards={boards} openTask={setSelectedTask} />
+          )}
+
+          {screen === "notifications" && (
+            <NotificationCenter
+              notifications={notifications}
+              markRead={(id) =>
+                setNotifications((previous) =>
+                  previous.map((item) => (item.id === id ? { ...item, read: true } : item))
+                )
+              }
+              markAllRead={() =>
+                setNotifications((previous) => previous.map((item) => ({ ...item, read: true })))
+              }
+            />
+          )}
+
+          <TaskDetailsModal
+            task={selectedTaskLive}
+            lists={activeBoard?.lists ?? []}
+            close={() => setSelectedTask(null)}
             moveTaskToList={moveTaskToList}
-            openTask={setSelectedTask}
+            toggleComplete={toggleComplete}
+            deleteTask={deleteTask}
+            commentAuthor={commentAuthor}
+            setCommentAuthor={setCommentAuthor}
+            commentText={commentText}
+            setCommentText={setCommentText}
+            addComment={addComment}
           />
-        )}
-
-        {screen === "add" && (
-          <AddTaskScreen addTask={addTask} />
-        )}
-
-        {screen === "list" && (
-          <ListViewScreen boards={boards} openTask={setSelectedTask} />
-        )}
-
-        {screen === "notifications" && (
-          <NotificationCenter
-            notifications={notifications}
-            markRead={(id) =>
-              setNotifications((previous) =>
-                previous.map((item) => (item.id === id ? { ...item, read: true } : item))
-              )
-            }
-            markAllRead={() =>
-              setNotifications((previous) => previous.map((item) => ({ ...item, read: true })))
-            }
-          />
-        )}
-
-        <TaskDetailsModal
-          task={selectedTaskLive}
-          lists={activeBoard?.lists ?? []}
-          close={() => setSelectedTask(null)}
-          moveTaskToList={moveTaskToList}
-          toggleComplete={toggleComplete}
-          deleteTask={deleteTask}
-          commentAuthor={commentAuthor}
-          setCommentAuthor={setCommentAuthor}
-          commentText={commentText}
-          setCommentText={setCommentText}
-          addComment={addComment}
-        />
-      </View>
-    </KeyboardAvoidingView>
+        </View>
+      </KeyboardAvoidingView>
+    </GestureHandlerRootView>
   );
 }
 
+// উপরের header: app title, active board name, notification/test buttons দেখায়।
 function Header({
   activeBoardTitle,
   unread,
@@ -768,7 +834,9 @@ function Header({
   );
 }
 
+// screen/tab navigation: Home, Boards, Board, Task, List mode switch করে।
 function NavBar({ screen, setScreen }: { screen: Screen; setScreen: (screen: Screen) => void }) {
+  // navigation item list এক জায়গায় রাখলে UI render করা সহজ হয়।
   const items: { key: Screen; icon: keyof typeof Ionicons.glyphMap; label: string }[] = [
     { key: "dashboard", icon: "grid-outline", label: "Home" },
     { key: "boards", icon: "albums-outline", label: "Boards" },
@@ -798,6 +866,7 @@ function NavBar({ screen, setScreen }: { screen: Screen; setScreen: (screen: Scr
   );
 }
 
+// Dashboard screen: total boards/tasks/completed/overdue count এবং quick actions দেখায়।
 function Dashboard({
   stats,
   setScreen,
@@ -805,6 +874,7 @@ function Dashboard({
   stats: { boards: number; tasks: number; completed: number; overdue: number; unread: number };
   setScreen: (screen: Screen) => void;
 }) {
+  // dashboard statistics card-এর data structure।
   const cards = [
     { label: "Total Boards", value: stats.boards, icon: "albums-outline" },
     { label: "Total Tasks", value: stats.tasks, icon: "checkbox-outline" },
@@ -833,6 +903,7 @@ function Dashboard({
   );
 }
 
+// Boards screen: সব board list করে, নতুন board বানায়, board open/delete করতে দেয়।
 function BoardsScreen({
   boards,
   activeBoardId,
@@ -868,8 +939,8 @@ function BoardsScreen({
       {boards.map((board) => {
         const total = board.lists.reduce((sum, list) => sum + list.cards.length, 0);
         return (
-          <TouchableOpacity key={board.id} style={styles.boardCard} onPress={() => openBoard(board.id)}>
-            <View style={styles.boardCardMain}>
+          <View key={board.id} style={styles.boardCard}>
+            <TouchableOpacity style={styles.boardCardMain} onPress={() => openBoard(board.id)}>
               <View style={[styles.boardIcon, board.id === activeBoardId && styles.boardIconActive]}>
                 <Ionicons name="albums-outline" size={20} color={board.id === activeBoardId ? "#ffffff" : "#0f172a"} />
               </View>
@@ -877,17 +948,18 @@ function BoardsScreen({
                 <Text style={styles.boardTitle}>{board.title}</Text>
                 <Text style={styles.boardMeta}>Tasks: {total}</Text>
               </View>
-            </View>
+            </TouchableOpacity>
             <TouchableOpacity style={styles.dangerIconButton} onPress={() => deleteBoard(board.id)}>
               <Ionicons name="trash-outline" size={18} color="#dc2626" />
             </TouchableOpacity>
-          </TouchableOpacity>
+          </View>
         );
       })}
     </ScrollView>
   );
 }
 
+// Trello-style board screen: horizontal lists, task cards, reorder, move, custom list সব handle করে।
 function BoardScreen({
   board,
   newListName,
@@ -905,11 +977,15 @@ function BoardScreen({
   moveTaskToList: (taskId: string, listId: string) => void;
   openTask: (task: Task) => void;
 }) {
+  // drag শুরু হলে কোন task কোন list থেকে ধরা হয়েছে সেটা রাখি।
   const [draggedTask, setDraggedTask] = useState<{ task: Task; listId: string } | null>(null);
+
+  // dragged task অন্য কোন list-এ নেওয়া যাবে, সেই target list গুলো।
   const moveTargets = draggedTask
     ? board.lists.filter((list) => list.id !== draggedTask.listId)
     : [];
 
+  // drag rail/drop target চাপলে task move করে drag state clear করে।
   const moveDraggedTask = (targetListId: string) => {
     if (!draggedTask) return;
     moveTaskToList(draggedTask.task.id, targetListId);
@@ -991,7 +1067,9 @@ function BoardScreen({
   );
 }
 
+// Add Task screen: task form নেয়, validate করে, parent app-এ save request পাঠায়।
 function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<void> }) {
+  // default deadline আগামীকাল, default reminder এক ঘণ্টা পরে রাখা হয়েছে।
   const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
   const reminder = new Date(Date.now() + 60 * 60 * 1000);
   const [title, setTitle] = useState("");
@@ -1004,6 +1082,7 @@ function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<v
   const [reminderTime, setReminderTime] = useState("17:00");
   const [priority, setPriority] = useState<Priority>("Medium");
 
+  // form submit: required field/date/reminder validate করে নতুন task তৈরি করে।
   const submit = async () => {
     const deadline = parseDateTime(deadlineDate, deadlineTime);
     const reminderAt = parseDateTime(reminderDate, reminderTime);
@@ -1091,8 +1170,11 @@ function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<v
   );
 }
 
+// List View screen: সব board-এর task একসাথে deadline অনুযায়ী sort করে দেখায়।
 function ListViewScreen({ boards, openTask }: { boards: Board[]; openTask: (task: Task) => void }) {
   const [search, setSearch] = useState("");
+
+  // search text অনুযায়ী filter করে nearest deadline first order-এ সাজায়।
   const tasks = boards
     .flatMap((board) =>
       board.lists.flatMap((list) => list.cards.map((task) => ({ ...task, boardTitle: board.title, listTitle: list.title })))
@@ -1117,6 +1199,7 @@ function ListViewScreen({ boards, openTask }: { boards: Board[]; openTask: (task
   );
 }
 
+// Notification Center: সব reminder/test notification, unread status, mark read actions দেখায়।
 function NotificationCenter({
   notifications,
   markRead,
@@ -1152,6 +1235,7 @@ function NotificationCenter({
   );
 }
 
+// Task detail modal: task details, status move, complete switch, comments, activity logs দেখায়।
 function TaskDetailsModal({
   task,
   lists,
@@ -1178,6 +1262,7 @@ function TaskDetailsModal({
   addComment: () => void;
 }) {
   if (!task) return null;
+  // detail header/card-এর color task state অনুযায়ী একই theme ব্যবহার করে।
   const theme = getCardTheme(task);
 
   return (
@@ -1260,6 +1345,7 @@ function TaskDetailsModal({
   );
 }
 
+// TaskCard: board/list view-তে task summary দেখায়, open, long-press drag এবং quick move handle করে।
 function TaskCard({
   task,
   lists,
@@ -1277,7 +1363,10 @@ function TaskCard({
   onLongPress?: () => void;
   dragging?: boolean;
 }) {
+  // card color deadline/completion অনুযায়ী update হয়।
   const theme = getCardTheme(task);
+
+  // quick move button-এ current list বাদ দিয়ে অন্য list গুলো দেখাই।
   const moveTargets = lists?.filter((list) => list.id !== currentListId).slice(0, 3) ?? [];
   return (
     <View
@@ -1321,7 +1410,9 @@ function TaskCard({
   );
 }
 
+// Priority badge: Low/Medium/High/Urgent priority color সহ দেখায়।
 function PriorityBadge({ priority }: { priority: Priority }) {
+  // priority অনুযায়ী badge color বের করি।
   const theme = getPriorityTheme(priority);
   return (
     <View style={[styles.priorityBadge, { backgroundColor: theme.bg }]}>
@@ -1330,6 +1421,7 @@ function PriorityBadge({ priority }: { priority: Priority }) {
   );
 }
 
+// DetailItem: task detail modal-এর ছোট info tile, যেমন Assigned/Deadline/Status।
 function DetailItem({ icon, label, value }: { icon: keyof typeof Ionicons.glyphMap; label: string; value: string }) {
   return (
     <View style={styles.detailItem}>
@@ -1340,6 +1432,7 @@ function DetailItem({ icon, label, value }: { icon: keyof typeof Ionicons.glyphM
   );
 }
 
+// FormInput: repeated text input UI reuse করার ছোট component।
 function FormInput({
   label,
   value,
@@ -1368,6 +1461,7 @@ function FormInput({
   );
 }
 
+// QuickAction: dashboard-এর বড় action row, যেমন Open Boards/List/Notifications।
 function QuickAction({ icon, label, onPress }: { icon: keyof typeof Ionicons.glyphMap; label: string; onPress: () => void }) {
   return (
     <TouchableOpacity style={styles.quickAction} onPress={onPress}>
@@ -1378,6 +1472,7 @@ function QuickAction({ icon, label, onPress }: { icon: keyof typeof Ionicons.gly
   );
 }
 
+// IconButton: header-এর icon-only button, optional unread badge সহ।
 function IconButton({ icon, label, onPress }: { icon: keyof typeof Ionicons.glyphMap; label?: string; onPress: () => void }) {
   return (
     <TouchableOpacity style={styles.iconButton} onPress={onPress}>
@@ -1391,6 +1486,7 @@ function IconButton({ icon, label, onPress }: { icon: keyof typeof Ionicons.glyp
   );
 }
 
+// পুরো app-এর visual design/style rules এখানে রাখা হয়েছে।
 const styles = StyleSheet.create({
   shell: {
     flex: 1,
