@@ -4,6 +4,16 @@ import { Ionicons } from "@expo/vector-icons";
 import DraggableFlatList, { RenderItemParams } from "react-native-draggable-flatlist";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+
+import { v4 as uuidv4 } from "uuid";
+import AddTaskScreen from "./AddTaskScreen";
+
+
+import BoardsScreen from "./BoardsScreen";
+import Dashboard from "./Dashboard";
+import Header from "./Header";
+
+
 import {
   Alert,
   KeyboardAvoidingView,
@@ -91,15 +101,15 @@ type NotificationItem = {
 type NotificationsModule = typeof import("expo-notifications");
 type DropZone = { x: number; y: number; width: number; height: number };
 
-// অ্যাপের সব বোর্ড, টাস্ক ও নোটিফিকেশন এই key দিয়ে ফোনের লোকাল স্টোরেজে রাখা হয়।
+// phone er local storage e rakhar key, app er shob board, task etc.
 const STORAGE_KEY = "taskflow-mobile-state-v3";
 
-// Expo Go-তে native notification API সীমিত, তাই এখানে আগেই বুঝে নিই fallback লাগবে কিনা।
+// Expo Go তে native notification API সীমিত, তাই এখানে আগেই বুঝে নিই fallback লাগবে কিনা।
 const isExpoGo =
   Constants.executionEnvironment === ExecutionEnvironment.StoreClient ||
   Constants.appOwnership === "expo";
 
-// নতুন বোর্ড বানালে Trello-এর মতো এই চারটি default column/list তৈরি হয়।
+// নতুন বোর্ড বানালে Trello-এর মতো এই চারটি default column or list তৈরি হয়।
 const DEFAULT_LISTS = [
   { id: "todo", title: "To Do" },
   { id: "in-progress", title: "In Progress" },
@@ -110,7 +120,7 @@ const DEFAULT_LISTS = [
 // বর্তমান সময় ISO string হিসেবে দেয়, যাতে storage ও sorting consistent থাকে।
 const nowIso = () => new Date().toISOString();
 
-// প্রতিটি board/list/task/comment/log-এর জন্য unique id বানায়।
+// প্রতিটি board/ list/task/comment/log-এর জন্য unique id বানায়।
 const makeId = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 // কোনো task action ঘটলে activity log object বানায়।
@@ -124,11 +134,11 @@ const createLog = (action: string): ActivityLog => ({
 const createDefaultLists = (): TaskList[] =>
   DEFAULT_LISTS.map((list) => ({ ...list, cards: [] }));
 
-// app প্রথমবার open হলে দেখানোর জন্য starter board বানায়।
+// app প্রথমবার open হলে দেখানোর জন্য starter board বানায়। default board. must have minimum 1.
 const createInitialBoards = (): Board[] => [
   {
     id: "board-1",
-    title: "TaskFlow Board",
+    title: "Task Manager Board",
     createdAt: nowIso(),
     lists: createDefaultLists(),
   },
@@ -155,7 +165,7 @@ const toInputDate = (value: Date) => {
   return `${value.getFullYear()}-${month}-${day}`;
 };
 
-// Date object থেকে HH:MM input format বানায়।
+// Date object থেকে hour, minute; HH:MM input format বানায়।
 const toInputTime = (value: Date) => {
   const hour = String(value.getHours()).padStart(2, "0");
   const minute = String(value.getMinutes()).padStart(2, "0");
@@ -185,7 +195,11 @@ const calculateRequiredTimeFromDeadline = (deadline: Date | null) => {
   return `${parts.join(" ") || "Less than 1m"} remaining`;
 };
 
-// deadline ও completion দেখে task-এর urgency state বের করে।
+
+// task manager.
+
+
+// deadline ও completion দেখে task এর urgency state বের করে।
 const getTaskState = (task: Task) => {
   if (task.completed) return "completed";
   const deadline = new Date(task.deadline).getTime();
@@ -196,6 +210,9 @@ const getTaskState = (task: Task) => {
   if (diff <= 3 * 24 * 60 * 60 * 1000) return "upcoming";
   return "normal";
 };
+
+
+
 
 // deadline পর্যন্ত কত সময় বাকি আছে বা কত overdue হয়েছে, সেই label বানায়।
 const getRemainingTime = (task: Task) => {
@@ -210,7 +227,10 @@ const getRemainingTime = (task: Task) => {
   return diff < 0 ? `${label} overdue` : `${label} left`;
 };
 
+
+
 // priority badge-এর color theme ঠিক করে।
+// colors. Low: blue, Medium: amber, High: orange, Urgent: red.
 const getPriorityTheme = (priority: Priority) => {
   switch (priority) {
     case "Low":
@@ -224,7 +244,11 @@ const getPriorityTheme = (priority: Priority) => {
   }
 };
 
+
+
+
 // task card-এর background/border color deadline ও completed status অনুযায়ী ঠিক করে।
+// completed: green, overdue: red, due within 24h: orange, due within 3d: yellow, otherwise normal gray.
 const getCardTheme = (task: Task) => {
   switch (getTaskState(task)) {
     case "completed":
@@ -239,6 +263,8 @@ const getCardTheme = (task: Task) => {
       return { bg: "#ffffff", border: "#dbe3ef", accent: "#64748b" };
   }
 };
+
+
 
 // একটি list-এর task গুলোর urgency দেখে পুরো list/column-এর color tint ঠিক করে।
 const getListTheme = (list: TaskList) => {
@@ -339,7 +365,9 @@ export default function TaskFlowApp() {
     loadState();
   }, []);
 
-  // boards বা notifications বদলালেই latest data local storage-এ save হয়।
+
+
+  // boards বা notifications বদলালেই latest data local storage এ save হয়।
   useEffect(() => {
     if (hydrated) persistState(boards, notifications);
   }, [boards, notifications, hydrated, persistState]);
@@ -354,7 +382,10 @@ export default function TaskFlowApp() {
     );
   }, []);
 
-  // প্রতি ৩০ সেকেন্ডে pending reminder check করে notification center update করে।
+
+
+
+  // প্রতি 30 সেকেন্ডে pending reminder check করে notification center update করে।
   useEffect(() => {
     markDueNotificationsDelivered();
     const timer = setInterval(markDueNotificationsDelivered, 30000);
@@ -396,7 +427,7 @@ export default function TaskFlowApp() {
     return module;
   }, []);
 
-  // device notification আসলে সেটাকে app-এর notification center-এ unread হিসেবে update করে।
+  // device notification আসলে সেটাকে app এর notifi. center এ unread হিসেবে update করে।
   useEffect(() => {
     let subscription: { remove: () => void } | undefined;
     ensureNotifications()
@@ -418,7 +449,7 @@ export default function TaskFlowApp() {
     return () => subscription?.remove();
   }, [ensureNotifications]);
 
-  // task-এর reminderAt অনুযায়ী local notification schedule করে।
+  // task এর reminder at  অনুযায়ী local notifi. sched. করে।
   const scheduleReminder = async (task: Task) => {
     const reminderDate = new Date(task.reminderAt);
     if (Number.isNaN(reminderDate.getTime()) || reminderDate <= new Date()) return undefined;
@@ -461,7 +492,7 @@ export default function TaskFlowApp() {
     setNotifications((previous) => [item, ...previous]);
   };
 
-  // যেকোনো board/list-এর ভিতরে থাকা নির্দিষ্ট task update করার reusable helper।
+  // যেকোনো board or list এর ভিতরে থাকা নির্দিষ্ট task update করার reusable helper।
   const updateTask = (taskId: string, updater: (task: Task) => Task) => {
     setBoards((previous) =>
       previous.map((board) => ({
@@ -478,7 +509,7 @@ export default function TaskFlowApp() {
   const addBoard = () => {
     const title = newBoardName.trim();
     if (!title) {
-      Alert.alert("Board name required", "Give the board a short, useful name.");
+      Alert.alert("Board name required", "Give the board a short and useful name.");
       return;
     }
 
@@ -497,7 +528,7 @@ export default function TaskFlowApp() {
   // board delete করার আগে confirmation নেয় এবং কমপক্ষে একটি board রাখে।
   const deleteBoard = (boardId: string) => {
     if (boards.length === 1) {
-      Alert.alert("Keep one board", "TaskFlow needs at least one board.");
+      Alert.alert("Keep 1 board", "TaskManager needs at least one board.");
       return;
     }
 
@@ -517,7 +548,7 @@ export default function TaskFlowApp() {
     ]);
   };
 
-  // active board-এ নতুন custom list/column যোগ করে।
+  // active board-এ নতুন custom list/column যোগ kora.
   const addList = () => {
     const title = newListName.trim();
     if (!title || !activeBoard) {
@@ -1130,9 +1161,9 @@ function BoardScreen({
   );
 }
 
-// Add Task screen: task form নেয়, validate করে, parent app-এ save request পাঠায়।
+// Add Task screen, task form নেয়, validate করে, parent app এ save request পাঠায়।
 function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<void> }) {
-  // default deadline আগামীকাল, default reminder এক ঘণ্টা পরে রাখা হয়েছে।
+  // default deadline tomorrow and , default reminder এক ঘণ্টা পরে রাখা হয়েছে।
   const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
   const reminder = new Date(Date.now() + 60 * 60 * 1000);
   const [title, setTitle] = useState("");
@@ -1149,7 +1180,7 @@ function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<v
   );
   const requiredTime = calculateRequiredTimeFromDeadline(deadlinePreview);
 
-  // preset চাপলে deadline বসে যায় এবং reminder deadline-এর এক ঘণ্টা আগে set হয়।
+  // preset click korle deadline বসে jabe এবং reminder deadline এর এক ঘণ্টা আগে set হয়।
   const applyDeadlinePreset = (daysFromNow: number, hour: number, minute = 0) => {
     const nextDeadline = new Date();
     nextDeadline.setDate(nextDeadline.getDate() + daysFromNow);
@@ -1171,11 +1202,11 @@ function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<v
     const deadline = parseDateTime(deadlineDate, deadlineTime);
     const reminderAt = parseDateTime(reminderDate, reminderTime);
     if (!title.trim()) {
-      Alert.alert("Task title required", "Add a clear title before saving.");
+      Alert.alert("Enter task title", "add clear task title before saving the task.");
       return;
     }
     if (!deadline || !reminderAt) {
-      Alert.alert("Invalid date", "Use YYYY-MM-DD for dates and HH:MM for time.");
+      Alert.alert("Date is invalid", "Use YYYY-MM-DD for dates and HH:MM for time.");
       return;
     }
     if (reminderAt > deadline) {
@@ -1274,6 +1305,8 @@ function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<v
   );
 }
 
+// board er baire shob task dekhay.
+
 // List View screen: সব board-এর task একসাথে deadline অনুযায়ী sort করে দেখায়।
 function ListViewScreen({ boards, openTask }: { boards: Board[]; openTask: (task: Task) => void }) {
   const [search, setSearch] = useState("");
@@ -1303,7 +1336,7 @@ function ListViewScreen({ boards, openTask }: { boards: Board[]; openTask: (task
   );
 }
 
-// Notification Center: সব reminder/test notification, unread status, mark read actions দেখায়।
+// Notifi. Center. সব reminder/test notification, unread status, mark read actions দেখায়।
 function NotificationCenter({
   notifications,
   markRead,
@@ -1362,7 +1395,7 @@ function TaskDetailsModal({
   addComment: () => void;
 }) {
   if (!task) return null;
-  // detail header/card-এর color task state অনুযায়ী একই theme ব্যবহার করে।
+  // detailed header/card এর color task state অনুযায়ী একই theme ব্যবহার করে।
   const theme = getCardTheme(task);
 
   return (
@@ -1521,7 +1554,7 @@ function TaskCard({
 
 // Priority badge: Low/Medium/High/Urgent priority color সহ দেখায়।
 function PriorityBadge({ priority }: { priority: Priority }) {
-  // priority অনুযায়ী badge color বের করি।
+  // priority অনুযায়ী badge color বের করি
   const theme = getPriorityTheme(priority);
   return (
     <View style={[styles.priorityBadge, { backgroundColor: theme.bg }]}>
@@ -1569,6 +1602,8 @@ function FormInput({
     </View>
   );
 }
+
+
 
 // QuickAction: dashboard-এর বড় action row, যেমন Open Boards/List/Notifications।
 function QuickAction({ icon, label, onPress }: { icon: keyof typeof Ionicons.glyphMap; label: string; onPress: () => void }) {
