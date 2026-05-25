@@ -5,13 +5,6 @@ import DraggableFlatList, { RenderItemParams } from "react-native-draggable-flat
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { v4 as uuidv4 } from "uuid";
-import AddTaskScreen from "./AddTaskScreen";
-
-
-import BoardsScreen from "./BoardsScreen";
-import Dashboard from "./Dashboard";
-import Header from "./Header";
 
 
 import {
