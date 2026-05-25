@@ -8,6 +8,7 @@ import {
   Alert,
   KeyboardAvoidingView,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   ScrollView,
@@ -88,6 +89,7 @@ type NotificationItem = {
 };
 
 type NotificationsModule = typeof import("expo-notifications");
+type DropZone = { x: number; y: number; width: number; height: number };
 
 // অ্যাপের সব বোর্ড, টাস্ক ও নোটিফিকেশন এই key দিয়ে ফোনের লোকাল স্টোরেজে রাখা হয়।
 const STORAGE_KEY = "taskflow-mobile-state-v3";
@@ -153,10 +155,34 @@ const toInputDate = (value: Date) => {
   return `${value.getFullYear()}-${month}-${day}`;
 };
 
+// Date object থেকে HH:MM input format বানায়।
+const toInputTime = (value: Date) => {
+  const hour = String(value.getHours()).padStart(2, "0");
+  const minute = String(value.getMinutes()).padStart(2, "0");
+  return `${hour}:${minute}`;
+};
+
 // date input ও time input মিলিয়ে valid Date object বানায়।
 const parseDateTime = (date: string, time: string) => {
   const parsed = new Date(`${date.trim()}T${time.trim()}:00`);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+// deadline থেকে এখন পর্যন্ত কত সময় আছে, সেটাই required time হিসেবে calculate করে।
+const calculateRequiredTimeFromDeadline = (deadline: Date | null) => {
+  if (!deadline) return "Select a valid deadline";
+  const diff = deadline.getTime() - Date.now();
+  if (diff <= 0) return "Deadline has passed";
+  const totalMinutes = Math.ceil(diff / (1000 * 60));
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [
+    days > 0 ? `${days}d` : "",
+    hours > 0 ? `${hours}h` : "",
+    minutes > 0 && days === 0 ? `${minutes}m` : "",
+  ].filter(Boolean);
+  return `${parts.join(" ") || "Less than 1m"} remaining`;
 };
 
 // deadline ও completion দেখে task-এর urgency state বের করে।
@@ -791,9 +817,7 @@ export default function TaskFlowApp() {
 
           <TaskDetailsModal
             task={selectedTaskLive}
-            lists={activeBoard?.lists ?? []}
             close={() => setSelectedTask(null)}
-            moveTaskToList={moveTaskToList}
             toggleComplete={toggleComplete}
             deleteTask={deleteTask}
             commentAuthor={commentAuthor}
@@ -979,17 +1003,48 @@ function BoardScreen({
 }) {
   // drag শুরু হলে কোন task কোন list থেকে ধরা হয়েছে সেটা রাখি।
   const [draggedTask, setDraggedTask] = useState<{ task: Task; listId: string } | null>(null);
+  const [activeDropListId, setActiveDropListId] = useState<string | null>(null);
+  const columnRefs = useRef<Record<string, View | null>>({});
+  const dropZonesRef = useRef<Record<string, DropZone>>({});
 
-  // dragged task অন্য কোন list-এ নেওয়া যাবে, সেই target list গুলো।
-  const moveTargets = draggedTask
-    ? board.lists.filter((list) => list.id !== draggedTask.listId)
-    : [];
+  // প্রতিটি column screen-এর কোথায় আছে তা মেপে রাখি, যাতে card ছাড়ার সময় target list বুঝতে পারি।
+  const measureDropZones = () => {
+    Object.entries(columnRefs.current).forEach(([listId, ref]) => {
+      ref?.measureInWindow((x, y, width, height) => {
+        dropZonesRef.current[listId] = { x, y, width, height };
+      });
+    });
+  };
 
-  // drag rail/drop target চাপলে task move করে drag state clear করে।
-  const moveDraggedTask = (targetListId: string) => {
+  // finger/mouse কোন column-এর উপর আছে তা x/y position দিয়ে বের করে।
+  const findDropList = (x: number, y: number) => {
+    const match = Object.entries(dropZonesRef.current).find(([, zone]) => {
+      return x >= zone.x && x <= zone.x + zone.width && y >= zone.y && y <= zone.y + zone.height;
+    });
+    return match?.[0] ?? null;
+  };
+
+  // card drag শুরু হলে active task save করি এবং column drop zone মাপি।
+  const startCrossListDrag = (task: Task, listId: string) => {
+    setDraggedTask({ task, listId });
+    setActiveDropListId(listId);
+    requestAnimationFrame(measureDropZones);
+  };
+
+  // drag চলার সময় কোন column hover হচ্ছে সেটা highlight করি।
+  const updateCrossListDrag = (x: number, y: number) => {
+    setActiveDropListId(findDropList(x, y));
+  };
+
+  // drag release হলে যদি অন্য list-এর উপর ছাড়া হয়, task সেই list-এ move হয়।
+  const finishCrossListDrag = (x: number, y: number) => {
     if (!draggedTask) return;
-    moveTaskToList(draggedTask.task.id, targetListId);
+    const targetListId = findDropList(x, y);
+    if (targetListId && targetListId !== draggedTask.listId) {
+      moveTaskToList(draggedTask.task.id, targetListId);
+    }
     setDraggedTask(null);
+    setActiveDropListId(null);
   };
 
   return (
@@ -1012,19 +1067,12 @@ function BoardScreen({
           <View style={styles.dropRailTitleRow}>
             <Ionicons name="hand-left-outline" size={16} color="#0f172a" />
             <Text style={styles.dropRailTitle} numberOfLines={1}>
-              {`Move ${draggedTask.task.title}`}
+              {activeDropListId && activeDropListId !== draggedTask.listId
+                ? `Drop in ${board.lists.find((list) => list.id === activeDropListId)?.title ?? "this list"}`
+                : `Drag ${draggedTask.task.title} over another list`}
             </Text>
           </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dropRailTargets}>
-            {moveTargets.map((list) => (
-              <TouchableOpacity key={list.id} style={styles.dropTargetButton} onPress={() => moveDraggedTask(list.id)}>
-                <Text style={styles.dropTargetText}>{list.title}</Text>
-              </TouchableOpacity>
-            ))}
-            <TouchableOpacity style={styles.dropCancelButton} onPress={() => setDraggedTask(null)}>
-              <Ionicons name="close" size={16} color="#475569" />
-            </TouchableOpacity>
-          </ScrollView>
+          <Text style={styles.dropRailHelp}>Release the card on a column to move it.</Text>
         </View>
       )}
 
@@ -1032,7 +1080,18 @@ function BoardScreen({
         {board.lists.map((list) => {
           const listTheme = getListTheme(list);
           return (
-          <View key={list.id} style={[styles.column, { backgroundColor: listTheme.bg, borderColor: listTheme.border }]}>
+          <View
+            key={list.id}
+            ref={(ref) => {
+              columnRefs.current[list.id] = ref;
+            }}
+            onLayout={measureDropZones}
+            style={[
+              styles.column,
+              { backgroundColor: listTheme.bg, borderColor: listTheme.border },
+              activeDropListId === list.id && styles.columnDropActive,
+            ]}
+          >
             <View style={styles.columnHeader}>
               <Text style={[styles.columnTitle, { color: listTheme.header }]}>{list.title}</Text>
               <Text style={styles.countBadge}>{list.cards.length}</Text>
@@ -1046,15 +1105,19 @@ function BoardScreen({
                 const task = list.cards[index];
                 if (task) setDraggedTask({ task, listId: list.id });
               }}
-              onDragEnd={({ data }) => reorderList(list.id, data)}
+              onDragEnd={({ data }) => {
+                reorderList(list.id, data);
+                setDraggedTask(null);
+              }}
               renderItem={({ item, drag, isActive }: RenderItemParams<Task>) => (
                 <TaskCard
                   task={item}
-                  lists={board.lists}
                   currentListId={list.id}
-                  onMove={moveTaskToList}
                   onOpen={() => openTask(item)}
-                  onLongPress={drag}
+                  onDrag={drag}
+                  onCrossDragStart={startCrossListDrag}
+                  onCrossDragMove={updateCrossListDrag}
+                  onCrossDragEnd={finishCrossListDrag}
                   dragging={isActive}
                 />
               )}
@@ -1075,12 +1138,33 @@ function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<v
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [assignedTo, setAssignedTo] = useState("");
-  const [requiredTime, setRequiredTime] = useState("");
   const [deadlineDate, setDeadlineDate] = useState(toInputDate(tomorrow));
   const [deadlineTime, setDeadlineTime] = useState("18:00");
   const [reminderDate, setReminderDate] = useState(toInputDate(reminder));
   const [reminderTime, setReminderTime] = useState("17:00");
   const [priority, setPriority] = useState<Priority>("Medium");
+  const deadlinePreview = useMemo(
+    () => parseDateTime(deadlineDate, deadlineTime),
+    [deadlineDate, deadlineTime]
+  );
+  const requiredTime = calculateRequiredTimeFromDeadline(deadlinePreview);
+
+  // preset চাপলে deadline বসে যায় এবং reminder deadline-এর এক ঘণ্টা আগে set হয়।
+  const applyDeadlinePreset = (daysFromNow: number, hour: number, minute = 0) => {
+    const nextDeadline = new Date();
+    nextDeadline.setDate(nextDeadline.getDate() + daysFromNow);
+    nextDeadline.setHours(hour, minute, 0, 0);
+
+    if (nextDeadline <= new Date()) {
+      nextDeadline.setDate(nextDeadline.getDate() + 1);
+    }
+
+    const nextReminder = new Date(nextDeadline.getTime() - 60 * 60 * 1000);
+    setDeadlineDate(toInputDate(nextDeadline));
+    setDeadlineTime(toInputTime(nextDeadline));
+    setReminderDate(toInputDate(nextReminder));
+    setReminderTime(toInputTime(nextReminder));
+  };
 
   // form submit: required field/date/reminder validate করে নতুন task তৈরি করে।
   const submit = async () => {
@@ -1112,7 +1196,6 @@ function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<v
     setTitle("");
     setDescription("");
     setAssignedTo("");
-    setRequiredTime("");
     setDeadlineDate(toInputDate(tomorrow));
     setDeadlineTime("18:00");
     setReminderDate(toInputDate(reminder));
@@ -1125,13 +1208,34 @@ function AddTaskScreen({ addTask }: { addTask: (task: NewTaskInput) => Promise<v
       <FormInput label="Task Title" value={title} onChangeText={setTitle} placeholder="Design database schema" />
       <FormInput label="Description" value={description} onChangeText={setDescription} placeholder="Add context, links, or acceptance notes" multiline />
       <FormInput label="Assigned User" value={assignedTo} onChangeText={setAssignedTo} placeholder="Ashik" />
-      <FormInput label="Required Time" value={requiredTime} onChangeText={setRequiredTime} placeholder="3 hours" />
 
       <View style={styles.inputGroup}>
         <Text style={styles.inputLabel}>Deadline</Text>
+        <View style={styles.deadlinePresetRow}>
+          <TouchableOpacity style={styles.deadlinePresetButton} onPress={() => applyDeadlinePreset(0, 21)}>
+            <Text style={styles.deadlinePresetText}>Tonight</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.deadlinePresetButton} onPress={() => applyDeadlinePreset(1, 18)}>
+            <Text style={styles.deadlinePresetText}>Tomorrow</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.deadlinePresetButton} onPress={() => applyDeadlinePreset(3, 18)}>
+            <Text style={styles.deadlinePresetText}>3 Days</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={styles.deadlinePresetButton} onPress={() => applyDeadlinePreset(7, 18)}>
+            <Text style={styles.deadlinePresetText}>Next Week</Text>
+          </TouchableOpacity>
+        </View>
         <View style={styles.doubleRow}>
           <TextInput style={styles.input} value={deadlineDate} onChangeText={setDeadlineDate} placeholder="YYYY-MM-DD" placeholderTextColor="#94a3b8" />
           <TextInput style={styles.input} value={deadlineTime} onChangeText={setDeadlineTime} placeholder="HH:MM" placeholderTextColor="#94a3b8" />
+        </View>
+      </View>
+
+      <View style={styles.inputGroup}>
+        <Text style={styles.inputLabel}>Required Time</Text>
+        <View style={styles.calculatedTimeBox}>
+          <Ionicons name="hourglass-outline" size={18} color="#0f766e" />
+          <Text style={styles.calculatedTimeText}>{requiredTime}</Text>
         </View>
       </View>
 
@@ -1238,9 +1342,7 @@ function NotificationCenter({
 // Task detail modal: task details, status move, complete switch, comments, activity logs দেখায়।
 function TaskDetailsModal({
   task,
-  lists,
   close,
-  moveTaskToList,
   toggleComplete,
   deleteTask,
   commentAuthor,
@@ -1250,9 +1352,7 @@ function TaskDetailsModal({
   addComment,
 }: {
   task: Task | null;
-  lists: TaskList[];
   close: () => void;
-  moveTaskToList: (taskId: string, listId: string) => void;
   toggleComplete: (taskId: string, completed: boolean) => void;
   deleteTask: (taskId: string) => void;
   commentAuthor: string;
@@ -1299,15 +1399,6 @@ function TaskDetailsModal({
             <Switch value={task.completed} onValueChange={(value) => toggleComplete(task.id, value)} />
           </View>
 
-          <Text style={styles.sectionTitle}>Move to list</Text>
-          <View style={styles.moveGrid}>
-            {lists.map((list) => (
-              <TouchableOpacity key={list.id} style={styles.moveButton} onPress={() => moveTaskToList(task.id, list.id)}>
-                <Text style={styles.moveButtonText}>{list.title}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-
           <Text style={styles.sectionTitle}>Comments</Text>
           <TextInput style={styles.input} value={commentAuthor} onChangeText={setCommentAuthor} placeholder="Commenter name" placeholderTextColor="#94a3b8" />
           <TextInput
@@ -1348,34 +1439,66 @@ function TaskDetailsModal({
 // TaskCard: board/list view-তে task summary দেখায়, open, long-press drag এবং quick move handle করে।
 function TaskCard({
   task,
-  lists,
   currentListId,
-  onMove,
   onOpen,
-  onLongPress,
+  onDrag,
+  onCrossDragStart,
+  onCrossDragMove,
+  onCrossDragEnd,
   dragging,
 }: {
   task: Task;
-  lists?: TaskList[];
   currentListId?: string;
-  onMove?: (taskId: string, listId: string) => void;
   onOpen: () => void;
-  onLongPress?: () => void;
+  onDrag?: () => void;
+  onCrossDragStart?: (task: Task, listId: string) => void;
+  onCrossDragMove?: (x: number, y: number) => void;
+  onCrossDragEnd?: (x: number, y: number) => void;
   dragging?: boolean;
 }) {
   // card color deadline/completion অনুযায়ী update হয়।
   const theme = getCardTheme(task);
 
-  // quick move button-এ current list বাদ দিয়ে অন্য list গুলো দেখাই।
-  const moveTargets = lists?.filter((list) => list.id !== currentListId).slice(0, 3) ?? [];
+  // drag handle দিয়ে card অন্য column-এর উপর নিয়ে গেলে x/y position parent board-এ পাঠাই।
+  const crossListResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onPanResponderGrant: (event) => {
+          if (!currentListId) return;
+          onCrossDragStart?.(task, currentListId);
+          onCrossDragMove?.(event.nativeEvent.pageX, event.nativeEvent.pageY);
+        },
+        onPanResponderMove: (event) => {
+          onCrossDragMove?.(event.nativeEvent.pageX, event.nativeEvent.pageY);
+        },
+        onPanResponderRelease: (event) => {
+          onCrossDragEnd?.(event.nativeEvent.pageX, event.nativeEvent.pageY);
+        },
+        onPanResponderTerminate: (event) => {
+          onCrossDragEnd?.(event.nativeEvent.pageX, event.nativeEvent.pageY);
+        },
+      }),
+    [currentListId, onCrossDragEnd, onCrossDragMove, onCrossDragStart, task]
+  );
+
   return (
     <View
       style={[styles.taskCard, { backgroundColor: theme.bg, borderColor: theme.border }, dragging && styles.taskCardDragging]}
     >
-      <Pressable onPress={onOpen} onLongPress={onLongPress} delayLongPress={180}>
+      <Pressable onPress={onOpen} onLongPress={onDrag} delayLongPress={180}>
         <View style={styles.cardTop}>
           <PriorityBadge priority={task.priority} />
-          <Text style={[styles.remainingText, { color: theme.accent }]}>{getRemainingTime(task)}</Text>
+          <View style={styles.cardTopRight}>
+            <Text style={[styles.remainingText, { color: theme.accent }]}>{getRemainingTime(task)}</Text>
+            {onDrag && (
+              <View style={styles.dragHandle} {...crossListResponder.panHandlers}>
+                <Ionicons name="reorder-three-outline" size={18} color="#475569" />
+                <Text style={styles.dragHandleText}>Drag</Text>
+              </View>
+            )}
+          </View>
         </View>
         <Text style={styles.taskTitle}>{task.title}</Text>
         <Text style={styles.taskDescription} numberOfLines={2}>{task.description || "No description"}</Text>
@@ -1392,20 +1515,6 @@ function TaskCard({
           <Text style={styles.metaText}>{task.requiredTime || "No estimate"}</Text>
         </View>
       </Pressable>
-      {onMove && moveTargets.length > 0 && (
-        <View style={styles.cardMoveRow}>
-          <Text style={styles.cardMoveLabel}>Move</Text>
-          {moveTargets.map((list) => (
-            <TouchableOpacity
-              key={list.id}
-              style={styles.cardMoveButton}
-              onPress={() => onMove(task.id, list.id)}
-            >
-              <Text style={styles.cardMoveText} numberOfLines={1}>{list.title}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      )}
     </View>
   );
 }
@@ -1741,30 +1850,10 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     fontSize: 13,
   },
-  dropRailTargets: {
-    gap: 8,
-    alignItems: "center",
-  },
-  dropTargetButton: {
-    borderRadius: 8,
-    backgroundColor: "#0f172a",
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-  },
-  dropTargetText: {
-    color: "#ffffff",
-    fontWeight: "900",
+  dropRailHelp: {
+    color: "#9a3412",
     fontSize: 12,
-  },
-  dropCancelButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#fed7aa",
+    fontWeight: "700",
   },
   column: {
     width: 292,
@@ -1775,6 +1864,11 @@ const styles = StyleSheet.create({
     padding: 12,
     alignSelf: "flex-start",
     minHeight: 360,
+  },
+  columnDropActive: {
+    borderColor: "#0f766e",
+    borderWidth: 2,
+    transform: [{ scale: 1.01 }],
   },
   columnHeader: {
     flexDirection: "row",
@@ -1820,6 +1914,27 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: 8,
   },
+  cardTopRight: {
+    alignItems: "flex-end",
+    gap: 6,
+  },
+  dragHandle: {
+    minHeight: 28,
+    borderRadius: 7,
+    borderWidth: 1,
+    borderColor: "rgba(100, 116, 139, 0.35)",
+    backgroundColor: "rgba(255, 255, 255, 0.75)",
+    paddingHorizontal: 7,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+  },
+  dragHandleText: {
+    color: "#475569",
+    fontSize: 10,
+    fontWeight: "900",
+    textTransform: "uppercase",
+  },
   priorityBadge: {
     alignSelf: "flex-start",
     borderRadius: 6,
@@ -1858,36 +1973,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: "600",
   },
-  cardMoveRow: {
-    marginTop: 12,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: "rgba(15, 23, 42, 0.1)",
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    gap: 6,
-  },
-  cardMoveLabel: {
-    color: "#64748b",
-    fontSize: 11,
-    fontWeight: "900",
-    textTransform: "uppercase",
-  },
-  cardMoveButton: {
-    maxWidth: 92,
-    borderRadius: 7,
-    backgroundColor: "#ffffff",
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  cardMoveText: {
-    color: "#0f172a",
-    fontSize: 11,
-    fontWeight: "900",
-  },
   formContent: {
     padding: 20,
     paddingBottom: 120,
@@ -1921,6 +2006,43 @@ const styles = StyleSheet.create({
   doubleRow: {
     flexDirection: "row",
     gap: 10,
+  },
+  deadlinePresetRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+    marginBottom: 10,
+  },
+  deadlinePresetButton: {
+    flexGrow: 1,
+    minWidth: "22%",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#99f6e4",
+    backgroundColor: "#f0fdfa",
+    paddingVertical: 10,
+    alignItems: "center",
+  },
+  deadlinePresetText: {
+    color: "#0f766e",
+    fontSize: 12,
+    fontWeight: "900",
+  },
+  calculatedTimeBox: {
+    minHeight: 46,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#99f6e4",
+    backgroundColor: "#f0fdfa",
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  calculatedTimeText: {
+    color: "#0f172a",
+    fontSize: 14,
+    fontWeight: "900",
   },
   priorityRow: {
     flexDirection: "row",
@@ -2154,23 +2276,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-  },
-  moveGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  moveButton: {
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: "#cbd5e1",
-    backgroundColor: "#ffffff",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  moveButtonText: {
-    color: "#0f172a",
-    fontWeight: "900",
   },
   commentInput: {
     marginTop: 10,
